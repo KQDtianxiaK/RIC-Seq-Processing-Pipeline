@@ -1,0 +1,35 @@
+# Sample information
+prefix: "RIC-seq_HeLa_Total_rep1"
+
+# Input files
+fastq:
+  R1: "/path/to/rawdata/RIC-seq_HeLa_Total_rep1_1.fastq.gz"
+  R2: "/path/to/rawdata/RIC-seq_HeLa_Total_rep1_2.fastq.gz"
+
+# Output directory
+outputdir: "/path/to/output"
+
+# Singularity container
+sif: "/path/to/Containers/RIC-seq.sif"
+
+# Resources
+threads: 16
+
+# Reference files
+star_index: "/path/to/References/hg38/STAR_index"
+junction_bed: "/path/to/References/hg38/gencode.v38.all_exon_junction.bed"
+gene_annotation_bed: "/path/to/References/hg38/whole_gene_region.bed"
+adapterFa: "/path/to/References/adapter.fa"
+trimmomatic_jar: "/mnt/software/Trimmomatic-0.36/trimmomatic-0.36.jar"
+
+# Script paths (container internal path)
+scripts_root: "/mnt/RICseq_scripts_root"
+
+# Trimmomatic parameters
+trimmomatic_params: "ILLUMINACLIP:{adapter}:2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:36"
+
+# Analysis parameters
+fragment_len_cutoff: 1000      # For Step 3/4
+pvalue_cutoff: 0.05             # For Step 5
+monte_carlo_iters: 1000         # For Step 5
+monte_carlo_threads: 16         # For Step 5
