@@ -33,6 +33,7 @@ rule all:
         # Step 4 (optional, high memory usage)
         str(STEP4_DIR / f"{PREFIX}.cluster.withScore.highQuality.list"),
         str(MULTIQC_DIR / "multiqc_report.html"), 
+        str(QC_DIR / f"{PREFIX}_R1_fastqc.zip"),
 
 # ==========================================
 # Quality Control Rules
@@ -609,4 +610,5 @@ rule multiqc_report:
         else
             echo "⚠️  Warning: MultiQC report may not have been generated" >> {log}
         fi
+
         """
