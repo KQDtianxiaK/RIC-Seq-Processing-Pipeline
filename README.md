@@ -419,10 +419,6 @@ For more information about the RIC-seq method and its applications:
 
 * Lu Z, Zhang QC, Lee B, et al. RNA Duplex Map in Living Cells Reveals Higher-Order Transcriptome Structure.  *Cell* . 2016;165(5):1267-1279. doi:10.1016/j.cell.2016.04.028
 
-**Method Details:**
-
-* Zhang QC, Ma C, Chu L, et al. RNA In situ Conformation sequencing (RIC-seq) enables genome-wide analysis of RNA structure.  *Methods* . 2018;143:78-86. doi:10.1016/j.ymeth.2018.04.022
-
 **Original Repositories:**
 
 * https://github.com/caochch/RICpipe
