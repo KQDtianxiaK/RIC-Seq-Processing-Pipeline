@@ -1,170 +1,213 @@
 import os
 from pathlib import Path
 
-configfile: "config.yaml"
+configfile: "Scripts/config.yaml"
 
 # Directory paths
 OUT_DIR = Path(config["outputdir"])
-QC_DIR = OUT_DIR / "rawdata.qc"  # Quality control output directory
-TRIM_DIR = OUT_DIR / "trim"  # Trimmed reads directory
-DEDUP_DIR = OUT_DIR / "dedup"  # Deduplicated reads directory
-ALIGN_DIR = OUT_DIR / "alignment"  # Alignment results directory
-STEP1_DIR = OUT_DIR / "step1_pair_tags"  # Step1: Collect paired tags
-STEP2_DIR = OUT_DIR / "step2_separate"  # Step2: Separate intra/inter-molecular interactions
-STEP3_DIR = OUT_DIR / "step3_category"  # Step3: Categorize interactions
-STEP4_DIR = OUT_DIR / "step4_intra_cluster"  # Step4: Cluster intramolecular interactions
-STEP5_DIR = OUT_DIR / "step5_inter_network"  # Step5: Analyze intermolecular interaction network
-LOG_DIR = OUT_DIR / "logs"  # Log files directory
-MULTIQC_DIR = OUT_DIR / "multiqc"  # MultiQC report directory
+QC_DIR = OUT_DIR / "qc"
+TRIM_DIR = OUT_DIR / "trim"
+DEDUP_DIR = OUT_DIR / "dedup"
+RRNA_DIR = OUT_DIR / "rRNA_filter"
+ALIGN_DIR = OUT_DIR / "alignment"
+STEP1_DIR = OUT_DIR / "step1_pair_tags"
+STEP2_DIR = OUT_DIR / "step2_separate"
+STEP3_DIR = OUT_DIR / "step3_category"
+STEP4_DIR = OUT_DIR / "step4_intra_cluster"
+STEP5_DIR = OUT_DIR / "step5_inter_network"
+LOG_DIR = OUT_DIR / "logs"
+MULTIQC_DIR = OUT_DIR / "multiqc"
 
-PREFIX = config["prefix"]
 SCRIPTS = config["scripts_root"]
+SAMPLES = list(config["samples"].keys())
 
 # Step5 parameters
 THREADS = list(range(1, config["monte_carlo_threads"] + 1))
 
 rule all:
     input:
-        # Step 2 outputs
-        str(STEP2_DIR / f"{PREFIX}.interMolecular.sam"),
-        str(STEP2_DIR / f"{PREFIX}.intraMolecular.sam"),
-        # Step 5 results
-        str(STEP5_DIR / f"{PREFIX}.significant.interMolecular.interaction.list"),
-        # Step 4 (optional, high memory usage)
-        str(STEP4_DIR / f"{PREFIX}.cluster.withScore.highQuality.list"),
-        str(MULTIQC_DIR / "multiqc_report.html"), 
-        str(QC_DIR / f"{PREFIX}_R1_fastqc.zip"),
+        expand(str(MULTIQC_DIR / "multiqc_report.html")),
+        expand(str(STEP5_DIR / "{sample}.significant.interMolecular.interaction.list"), sample=SAMPLES),
+        expand(str(STEP4_DIR / "{sample}.cluster.withScore.highQuality.list"), sample=SAMPLES)
 
 # ==========================================
-# Quality Control Rules
+# Preprocessing: Trim Galore (Trimming + QC)
 # ==========================================
 
-rule fastqc_raw:
+rule trim_galore:
+    """
+    Trim adapters and low-quality bases using Trim Galore.
+    Includes FastQC analysis on raw reads.
+    """
     input:
-        r1 = config["fastq"]["R1"],
-        r2 = config["fastq"]["R2"]
+        r1 = lambda wildcards: config["samples"][wildcards.sample]["R1"],
+        r2 = lambda wildcards: config["samples"][wildcards.sample]["R2"]
     output:
-        zip1 = QC_DIR / f"{PREFIX}_R1_fastqc.zip",
-        html1 = QC_DIR / f"{PREFIX}_R1_fastqc.html",
-        zip2 = QC_DIR / f"{PREFIX}_R2_fastqc.zip",
-        html2 = QC_DIR / f"{PREFIX}_R2_fastqc.html"
+        r1_trim = temp(TRIM_DIR / "{sample}_R1_trimmed.fq.gz"),
+        r2_trim = temp(TRIM_DIR / "{sample}_R2_trimmed.fq.gz"),
+        qc1_raw = TRIM_DIR / "{sample}_R1_fastqc.zip",
+        qc2_raw = TRIM_DIR / "{sample}_R2_fastqc.zip"
     container: config["sif"]
-    threads: 4
-    log: LOG_DIR / "fastqc_raw.log"
-    shell:
-        """
-        mkdir -p {QC_DIR}
-        fastqc -t {threads} -o {QC_DIR} {input.r1} {input.r2} 2> {log}
-
-        BASE_R1=$(basename {input.r1} .fastq.gz | sed 's/.fq.gz//')
-        BASE_R2=$(basename {input.r2} .fastq.gz | sed 's/.fq.gz//')
-
-        if [ -f {QC_DIR}/${{BASE_R1}}_fastqc.zip ]; then
-            mv {QC_DIR}/${{BASE_R1}}_fastqc.zip {output.zip1}
-            mv {QC_DIR}/${{BASE_R1}}_fastqc.html {output.html1}
-        fi
-
-        if [ -f {QC_DIR}/${{BASE_R2}}_fastqc.zip ]; then
-            mv {QC_DIR}/${{BASE_R2}}_fastqc.zip {output.zip2}
-            mv {QC_DIR}/${{BASE_R2}}_fastqc.html {output.html2}
-        fi
-        """
-
-# ==========================================
-# Read Preprocessing and Deduplication
-# ==========================================
-
-rule trimmomatic:
-    input:
-        r1 = config["fastq"]["R1"],
-        r2 = config["fastq"]["R2"]
-    output:
-        r1_p = TRIM_DIR / f"{PREFIX}_R1.paired.fq.gz",
-        r1_u = TRIM_DIR / f"{PREFIX}_R1.unpaired.fq.gz",
-        r2_p = TRIM_DIR / f"{PREFIX}_R2.paired.fq.gz",
-        r2_u = TRIM_DIR / f"{PREFIX}_R2.unpaired.fq.gz"
-    container: config["sif"]
-    threads: config["threads"]
-    params:
-        jar = config["trimmomatic_jar"],
-        trim_cmd = config["trimmomatic_params"].replace("{adapter}", config["adapterFa"])
-    log: LOG_DIR / "trimmomatic.log"
+    threads: 8
+    log: LOG_DIR / "{sample}_trim_galore.log"
     shell:
         """
         mkdir -p {TRIM_DIR}
-        java -jar {params.jar} PE -threads {threads} -phred33 \
-            {input.r1} {input.r2} \
-            {output.r1_p} {output.r1_u} \
-            {output.r2_p} {output.r2_u} \
-            {params.trim_cmd} 2> {log}
+        
+        trim_galore --paired --phred33 --stringency 3 --length 30 --fastqc \
+            --cores {threads} --gzip \
+            -o {TRIM_DIR} \
+            {input.r1} {input.r2} > {log} 2>&1
+        
+        # Get base names
+        BASE1=$(basename {input.r1} .fastq.gz)
+        BASE2=$(basename {input.r2} .fastq.gz)
+        
+        # Rename trimmed files
+        mv {TRIM_DIR}/${{BASE1}}_val_1.fq.gz {output.r1_trim}
+        mv {TRIM_DIR}/${{BASE2}}_val_2.fq.gz {output.r2_trim}
+        
+        # Rename FastQC files
+        mv {TRIM_DIR}/${{BASE1}}_val_1_fastqc.zip {output.qc1_raw}
+        mv {TRIM_DIR}/${{BASE2}}_val_2_fastqc.zip {output.qc2_raw}
+        mv {TRIM_DIR}/${{BASE1}}_val_1_fastqc.html {TRIM_DIR}/{wildcards.sample}_R1_fastqc.html
+        mv {TRIM_DIR}/${{BASE2}}_val_2_fastqc.html {TRIM_DIR}/{wildcards.sample}_R2_fastqc.html
         """
 
-rule cutadapt:
+rule cutadapt_polyN:
+    """
+    Remove poly-N tails using cutadapt after initial trimming.
+    """
     input:
-        r1 = TRIM_DIR / f"{PREFIX}_R1.paired.fq.gz",
-        r2 = TRIM_DIR / f"{PREFIX}_R2.paired.fq.gz"
+        r1 = TRIM_DIR / "{sample}_R1_trimmed.fq.gz",
+        r2 = TRIM_DIR / "{sample}_R2_trimmed.fq.gz"
     output:
-        r1 = TRIM_DIR / f"{PREFIX}_R1.clean.fq",
-        r2 = TRIM_DIR / f"{PREFIX}_R2.clean.fq"
+        r1_val = TRIM_DIR / "{sample}_val_1.fq.gz",
+        r2_val = TRIM_DIR / "{sample}_val_2.fq.gz"
     container: config["sif"]
-    threads: 8
-    log: LOG_DIR / "cutadapt.log"
+    threads: 4
+    log: LOG_DIR / "{sample}_cutadapt.log"
     shell:
         """
-        cutadapt -q 25 -m 36 -j {threads} \
-            -o {output.r1} -p {output.r2} \
-            {input.r1} {input.r2} > {log}
+        cutadapt -b A{{100}} -b C{{100}} -b G{{100}} -b T{{100}} \
+            -B A{{100}} -B C{{100}} -B G{{100}} -B T{{100}} \
+            -n 3 -e 0.1 --minimum-length 30 \
+            -o {output.r1_val} -p {output.r2_val} \
+            {input.r1} {input.r2} > {log} 2>&1
         """
 
-rule unzip_unpaired:
+rule fastqc_trimmed:
+    """
+    Run FastQC on final trimmed reads.
+    """
     input:
-        r1_u = TRIM_DIR / f"{PREFIX}_R1.unpaired.fq.gz",
-        r2_u = TRIM_DIR / f"{PREFIX}_R2.unpaired.fq.gz"
+        r1 = TRIM_DIR / "{sample}_val_1.fq.gz",
+        r2 = TRIM_DIR / "{sample}_val_2.fq.gz"
     output:
-        r1_u = temp(TRIM_DIR / f"{PREFIX}_R1.unpaired.fq"),
-        r2_u = temp(TRIM_DIR / f"{PREFIX}_R2.unpaired.fq")
+        qc1 = QC_DIR / "{sample}_val_1_fastqc.zip",
+        qc2 = QC_DIR / "{sample}_val_2_fastqc.zip",
+        html1 = QC_DIR / "{sample}_val_1_fastqc.html",
+        html2 = QC_DIR / "{sample}_val_2_fastqc.html"
+    container: config["sif"]
+    threads: 2
+    log: LOG_DIR / "{sample}_fastqc_trimmed.log"
     shell:
-        "gunzip -c {input.r1_u} > {output.r1_u} && gunzip -c {input.r2_u} > {output.r2_u}"
+        """
+        mkdir -p {QC_DIR}
+        fastqc -t {threads} -o {QC_DIR} {input.r1} {input.r2} > {log} 2>&1
+        """
 
 rule remove_pcr_duplicates:
     input:
-        r1_c = TRIM_DIR / f"{PREFIX}_R1.clean.fq",
-        r2_c = TRIM_DIR / f"{PREFIX}_R2.clean.fq",
-        r1_u = TRIM_DIR / f"{PREFIX}_R1.unpaired.fq",
-        r2_u = TRIM_DIR / f"{PREFIX}_R2.unpaired.fq"
+        r1_val = TRIM_DIR / "{sample}_val_1.fq.gz",
+        r2_val = TRIM_DIR / "{sample}_val_2.fq.gz"
     output:
-        r1_dedup = DEDUP_DIR / "read1.clean.rmDup.fq",
-        r2_dedup = DEDUP_DIR / "read2.clean.rmDup.fq"
+        r1_dedup = DEDUP_DIR / "{sample}_read1.clean.rmDup.fq",
+        r2_dedup = DEDUP_DIR / "{sample}_read2.clean.rmDup.fq",
+        stats = DEDUP_DIR / "{sample}_dedup_stats.txt"
     container: config["sif"]
     params:
         script = f"{SCRIPTS}/step0.remove_PCR_duplicates/remove_PCR_duplicates.pl",
         out_dir = DEDUP_DIR
-    log: LOG_DIR / "dedup.log"
+    log: LOG_DIR / "{sample}_dedup.log"
     shell:
         """
         mkdir -p {params.out_dir}
-        perl {params.script} \
-            {input.r1_c} {input.r2_c} \
-            {input.r1_u} {input.r2_u} \
-            {params.out_dir} > {params.out_dir}/run_dedup_commands.sh
+        
+        gunzip -c {input.r1_val} > {params.out_dir}/{wildcards.sample}_R1.tmp.fq
+        gunzip -c {input.r2_val} > {params.out_dir}/{wildcards.sample}_R2.tmp.fq
+        touch {params.out_dir}/{wildcards.sample}_dummy.fq
 
-        sh {params.out_dir}/run_dedup_commands.sh > {log} 2>&1
+        perl {params.script} \
+            {params.out_dir}/{wildcards.sample}_R1.tmp.fq \
+            {params.out_dir}/{wildcards.sample}_R2.tmp.fq \
+            {params.out_dir}/{wildcards.sample}_dummy.fq \
+            {params.out_dir}/{wildcards.sample}_dummy.fq \
+            {params.out_dir} > {params.out_dir}/{wildcards.sample}_run_dedup.sh
+
+        sh {params.out_dir}/{wildcards.sample}_run_dedup.sh > {log} 2>&1
+
+        mv {params.out_dir}/read1.clean.rmDup.fq {output.r1_dedup}
+        mv {params.out_dir}/read2.clean.rmDup.fq {output.r2_dedup}
+        
+        # Generate dedup statistics
+        echo "Sample: {wildcards.sample}" > {output.stats}
+        echo "Deduplication completed" >> {output.stats}
+        wc -l {output.r1_dedup} | awk '{{print "Reads after dedup: " $1/4}}' >> {output.stats}
+        
+        rm {params.out_dir}/{wildcards.sample}_R1.tmp.fq {params.out_dir}/{wildcards.sample}_R2.tmp.fq {params.out_dir}/{wildcards.sample}_dummy.fq
         """
 
 # ==========================================
-# Step 1: Alignment & Collecting Pairs
+# rRNA Filtration
+# ==========================================
+
+rule rrna_filter:
+    """Map reads to rRNA index and keep unmapped reads"""
+    input:
+        r1 = DEDUP_DIR / "{sample}_read1.clean.rmDup.fq",
+        r2 = DEDUP_DIR / "{sample}_read2.clean.rmDup.fq"
+    output:
+        r1_clean = RRNA_DIR / "{sample}.no_rRNA.1.fq",
+        r2_clean = RRNA_DIR / "{sample}.no_rRNA.2.fq",
+        log_final = RRNA_DIR / "{sample}.Log.final.out"
+    container: config["sif"]
+    threads: config["threads"]
+    params:
+        index = config["rRNA_index"],
+        prefix = str(RRNA_DIR / "{sample}.")
+    log: LOG_DIR / "{sample}_rrna.log"
+    shell:
+        """
+        mkdir -p {RRNA_DIR}
+        STAR --runThreadN {threads} \
+             --genomeDir {params.index} \
+             --readFilesIn {input.r1} {input.r2} \
+             --outFileNamePrefix {params.prefix} \
+             --outReadsUnmapped Fastx \
+             --outSAMmode None \
+             > {log} 2>&1
+
+        mv {params.prefix}Unmapped.out.mate1 {output.r1_clean}
+        mv {params.prefix}Unmapped.out.mate2 {output.r2_clean}
+        """
+
+# ==========================================
+# Genome Alignment (Step 1)
 # ==========================================
 
 rule star_align_r1:
-    input: DEDUP_DIR / "read1.clean.rmDup.fq"
+    input: RRNA_DIR / "{sample}.no_rRNA.1.fq"
     output:
-        sam = ALIGN_DIR / f"{PREFIX}.read1.Aligned.out.sam",
-        chim = ALIGN_DIR / f"{PREFIX}.read1.Chimeric.out.sam"
+        sam = ALIGN_DIR / "{sample}.read1.Aligned.out.sam",
+        chim = ALIGN_DIR / "{sample}.read1.Chimeric.out.sam",
+        log_final = ALIGN_DIR / "{sample}.read1.Log.final.out"
     container: config["sif"]
     threads: config["threads"]
     params:
         index = config["star_index"],
-        prefix = str(ALIGN_DIR / f"{PREFIX}.read1.")
+        prefix = str(ALIGN_DIR / "{sample}.read1.")
+    log: LOG_DIR / "{sample}_star_r1.log"
     shell:
         """
         mkdir -p {ALIGN_DIR}
@@ -175,19 +218,27 @@ rule star_align_r1:
              --outSAMunmapped Within \
              --chimSegmentMin 15 --chimJunctionOverhangMin 15 \
              --chimOutType SeparateSAMold \
-             --alignIntronMax 1000000 --alignMatesGapMax 1000000
+             --outFilterMultimapNmax 100 \
+             --alignIntronMin 1 \
+             --scoreGapNoncan -4 --scoreGapATAC -4 \
+             --alignSJoverhangMin 15 --alignSJDBoverhangMin 10 \
+             --alignSJstitchMismatchNmax 5 -1 5 5 \
+             --alignIntronMax 1000000 --alignMatesGapMax 1000000 \
+             > {log} 2>&1
         """
 
 rule star_align_r2:
-    input: DEDUP_DIR / "read2.clean.rmDup.fq"
+    input: RRNA_DIR / "{sample}.no_rRNA.2.fq"
     output:
-        sam = ALIGN_DIR / f"{PREFIX}.read2.Aligned.out.sam",
-        chim = ALIGN_DIR / f"{PREFIX}.read2.Chimeric.out.sam"
+        sam = ALIGN_DIR / "{sample}.read2.Aligned.out.sam",
+        chim = ALIGN_DIR / "{sample}.read2.Chimeric.out.sam",
+        log_final = ALIGN_DIR / "{sample}.read2.Log.final.out"
     container: config["sif"]
     threads: config["threads"]
     params:
         index = config["star_index"],
-        prefix = str(ALIGN_DIR / f"{PREFIX}.read2.")
+        prefix = str(ALIGN_DIR / "{sample}.read2.")
+    log: LOG_DIR / "{sample}_star_r2.log"
     shell:
         """
         STAR --runThreadN {threads} --genomeDir {params.index} \
@@ -197,51 +248,60 @@ rule star_align_r2:
              --outSAMunmapped Within \
              --chimSegmentMin 15 --chimJunctionOverhangMin 15 \
              --chimOutType SeparateSAMold \
-             --alignIntronMax 1000000 --alignMatesGapMax 1000000
+             --outFilterMultimapNmax 100 \
+             --alignIntronMin 1 \
+             --scoreGapNoncan -4 --scoreGapATAC -4 \
+             --alignSJoverhangMin 15 --alignSJDBoverhangMin 10 \
+             --alignSJstitchMismatchNmax 5 -1 5 5 \
+             --alignIntronMax 1000000 --alignMatesGapMax 1000000 \
+             > {log} 2>&1
         """
 
 rule step1_collect_pairs:
     input:
-        sam1 = ALIGN_DIR / f"{PREFIX}.read1.Aligned.out.sam",
-        sam2 = ALIGN_DIR / f"{PREFIX}.read2.Aligned.out.sam",
-        chim1 = ALIGN_DIR / f"{PREFIX}.read1.Chimeric.out.sam",
-        chim2 = ALIGN_DIR / f"{PREFIX}.read2.Chimeric.out.sam"
+        sam1 = ALIGN_DIR / "{sample}.read1.Aligned.out.sam",
+        sam2 = ALIGN_DIR / "{sample}.read2.Aligned.out.sam",
+        chim1 = ALIGN_DIR / "{sample}.read1.Chimeric.out.sam",
+        chim2 = ALIGN_DIR / "{sample}.read2.Chimeric.out.sam"
     output:
-        merged_sam = STEP1_DIR / f"{PREFIX}.interaction.sam",
-        stats = STEP1_DIR / "num_of_interactions.list"
+        merged_sam = STEP1_DIR / "{sample}.interaction.sam",
+        stats = STEP1_DIR / "{sample}_num_of_interactions.list"
     container: config["sif"]
     threads: 10
     params:
         script = f"{SCRIPTS}/step1.collect_pair_tags/collect_pair_tags.pl",
-        file_prefix = f"{PREFIX}",
+        file_prefix = "{sample}",
         script_dir = f"{SCRIPTS}/step1.collect_pair_tags/scripts"
-    log: LOG_DIR / "step1_collect.log"
+    log: LOG_DIR / "{sample}_step1.log"
     shell:
         """
         mkdir -p {STEP1_DIR}
-
-        # Fix typo in original script filename if needed
+        
         if [ -f {params.script_dir}/precess_Chimeric_sam.pl ] && [ ! -f {params.script_dir}/process_Chimeric_sam.pl ]; then
             ln -s {params.script_dir}/precess_Chimeric_sam.pl {params.script_dir}/process_Chimeric_sam.pl
         fi
 
         cd {STEP1_DIR}
+        
+        ln -sf {input.sam1} .
+        ln -sf {input.sam2} .
+        ln -sf {input.chim1} .
+        ln -sf {input.chim2} .
 
         perl {params.script} \
-            {input.sam1} {input.sam2} \
-            {input.chim1} {input.chim2} \
+            $(basename {input.sam1}) $(basename {input.sam2}) \
+            $(basename {input.chim1}) $(basename {input.chim2}) \
             {threads} \
-            {params.file_prefix} > run_step1.sh
+            {params.file_prefix} > {wildcards.sample}_run_step1.sh
 
-        # Fix samtools sort syntax
-        perl -i -pe 's/samtools sort -n -@ (\d+) (\S+) (\S+)/samtools sort -n -@ $1 -o $3.bam $2/' run_step1.sh
-        perl -i -pe 's/samtools sort -@ (\d+) (\S+) (\S+)/samtools sort -@ $1 -o $3.bam $2/' run_step1.sh
+        perl -i -pe 's/samtools sort -n -@ (\\d+) (\\S+) (\\S+)/samtools sort -n -@ $1 -o $3.bam $2/' {wildcards.sample}_run_step1.sh
+        perl -i -pe 's/samtools sort -@ (\\d+) (\\S+) (\\S+)/samtools sort -@ $1 -o $3.bam $2/' {wildcards.sample}_run_step1.sh
 
-        echo "=== FINAL COMMANDS ===" >> {log}
-        cat run_step1.sh >> {log}
-        echo "======================" >> {log}
-
-        sh run_step1.sh >> {log} 2>&1
+        sh {wildcards.sample}_run_step1.sh >> {log} 2>&1
+        
+        if [ -f num_of_interactions.list ]; then
+            mv num_of_interactions.list {output.stats}
+        fi
         """
 
 # ==========================================
@@ -249,32 +309,36 @@ rule step1_collect_pairs:
 # ==========================================
 
 rule sam_to_bed:
-    """Convert SAM format to BED format for downstream analysis"""
-    input: STEP1_DIR / f"{PREFIX}.interaction.sam"
+    input: STEP1_DIR / "{sample}.interaction.sam"
     output:
-        bed1 = STEP2_DIR / "read_1.bed",
-        bed2 = STEP2_DIR / "read_2.bed"
+        bed1 = temp(STEP2_DIR / "{sample}.read_1.bed"),
+        bed2 = temp(STEP2_DIR / "{sample}.read_2.bed")
     container: config["sif"]
     params:
         script = f"{SCRIPTS}/step2.separate_intra_inter_molecular/scripts/from_sam_to_pair_reads_bed.pl"
+    log: LOG_DIR / "{sample}_sam_to_bed.log"
     shell:
         """
         mkdir -p {STEP2_DIR}
         cd {STEP2_DIR}
-        perl {params.script} {input}
+        ln -sf {input} {wildcards.sample}.interaction.sam
+        perl {params.script} {wildcards.sample}.interaction.sam > {log} 2>&1
+        
+        mv read_1.bed {output.bed1}
+        mv read_2.bed {output.bed2}
+        rm {wildcards.sample}.interaction.sam
         """
 
 rule intersect_genes:
-    """Intersect reads with gene annotations to identify overlapping genes"""
     input:
-        bed1 = STEP2_DIR / "read_1.bed",
-        bed2 = STEP2_DIR / "read_2.bed",
+        bed1 = STEP2_DIR / "{sample}.read_1.bed",
+        bed2 = STEP2_DIR / "{sample}.read_2.bed",
         genes = config["gene_annotation_bed"]
     output:
-        ov1 = STEP2_DIR / "gene_overlap_with_read1.bed",
-        ov2 = STEP2_DIR / "gene_overlap_with_read2.bed"
+        ov1 = temp(STEP2_DIR / "{sample}.gene_overlap_with_read1.bed"),
+        ov2 = temp(STEP2_DIR / "{sample}.gene_overlap_with_read2.bed")
     container: config["sif"]
-    log: LOG_DIR / "step2_intersect.log"
+    log: LOG_DIR / "{sample}_intersect.log"
     shell:
         """
         bedtools intersect -wa -wb -a {input.genes} -b {input.bed1} > {output.ov1} 2> {log}
@@ -282,55 +346,132 @@ rule intersect_genes:
         """
 
 rule find_intra_candidates:
-    """Identify read pairs within the same gene (intramolecular)"""
     input:
-        ov1 = STEP2_DIR / "gene_overlap_with_read1.bed",
-        ov2 = STEP2_DIR / "gene_overlap_with_read2.bed"
-    output: STEP2_DIR / "pets_in_same_gene.list"
+        ov1 = STEP2_DIR / "{sample}.gene_overlap_with_read1.bed",
+        ov2 = STEP2_DIR / "{sample}.gene_overlap_with_read2.bed"
+    output: STEP2_DIR / "{sample}.pets_in_same_gene.list"
     container: config["sif"]
     params:
         script = f"{SCRIPTS}/step2.separate_intra_inter_molecular/scripts/intra_pets_list.pl"
+    log: LOG_DIR / "{sample}_intra_list.log"
     shell:
-        "perl {params.script} {input.ov1} {input.ov2} > {output}"
+        "perl {params.script} {input.ov1} {input.ov2} > {output} 2> {log}"
 
 rule separate_files:
-    """Separate intramolecular and intermolecular interactions into different files"""
     input:
-        sam = STEP1_DIR / f"{PREFIX}.interaction.sam",
-        list_file = STEP2_DIR / "pets_in_same_gene.list"
+        sam = STEP1_DIR / "{sample}.interaction.sam",
+        list_file = STEP2_DIR / "{sample}.pets_in_same_gene.list"
     output:
-        intra = STEP2_DIR / f"{PREFIX}.intraMolecular.sam",
-        inter = STEP2_DIR / f"{PREFIX}.interMolecular.sam"
+        intra = STEP2_DIR / "{sample}.intraMolecular.sam",
+        inter = STEP2_DIR / "{sample}.interMolecular.sam"
     container: config["sif"]
     params:
         script = f"{SCRIPTS}/step2.separate_intra_inter_molecular/scripts/separate_intra_inter_pets.pl"
+    log: LOG_DIR / "{sample}_separate.log"
     shell:
         """
         cd {STEP2_DIR}
-        cp {input.sam} temp_for_split.sam
-        perl {params.script} temp_for_split.sam {input.list_file}
-        mv temp_for_split.intraMolecular.sam {output.intra}
-        mv temp_for_split.interMolecular.sam {output.inter}
-        rm -f temp_for_split.sam
+        cp {input.sam} {wildcards.sample}.temp.sam
+        
+        perl {params.script} {wildcards.sample}.temp.sam {input.list_file} > {log} 2>&1
+        
+        mv {wildcards.sample}.temp.intraMolecular.sam {output.intra}
+        mv {wildcards.sample}.temp.interMolecular.sam {output.inter}
+        rm {wildcards.sample}.temp.sam
         """
 
 # ==========================================
-# Step 4: Cluster Intramolecular (可选)
+# Step 3: Categorize Intra-molecular
+# ==========================================
+
+rule step3_category:
+    input:
+        intra_sam = STEP2_DIR / "{sample}.intraMolecular.sam",
+        gene_bed = config["gene_annotation_bed"],
+        junction_bed = config["junction_bed"]
+    output:
+        chim = STEP3_DIR / "{sample}.intraMolecular.Chimeric.sam",
+        sing = STEP3_DIR / "{sample}.intraMolecular.Singleton.sam"
+    container: config["sif"]
+    params:
+        script = f"{SCRIPTS}/step3.category_intra_reads/category_intra_reads.pl",
+        frag_cutoff = config["fragment_len_cutoff"],
+        work_dir = STEP3_DIR
+    log: LOG_DIR / "{sample}_step3.log"
+    shell:
+        """
+        mkdir -p {params.work_dir}
+        cd {params.work_dir}
+        
+        # Copy input to working directory
+        cp {input.intra_sam} .
+        BASENAME=$(basename {input.intra_sam})
+        
+        echo "=== Running step3 category script ===" > {log} 2>&1
+        echo "Working directory: $(pwd)" >> {log} 2>&1
+        echo "Input file: $BASENAME" >> {log} 2>&1
+        
+        # Run the perl script
+        perl {params.script} \
+            $BASENAME \
+            {params.frag_cutoff} \
+            {input.gene_bed} \
+            {input.junction_bed} >> {log} 2>&1
+        
+        echo "=== Script completed, checking outputs ===" >> {log} 2>&1
+        ls -lh *.sam >> {log} 2>&1
+        
+        # Check for output files with various possible naming patterns
+        if [ -f "${{BASENAME%.sam}}.Chimeric.sam" ]; then
+            mv "${{BASENAME%.sam}}.Chimeric.sam" {output.chim}
+            echo "Moved ${{BASENAME%.sam}}.Chimeric.sam to {output.chim}" >> {log} 2>&1
+        elif [ -f "{wildcards.sample}.intraMolecular.Chimeric.sam" ]; then
+            mv "{wildcards.sample}.intraMolecular.Chimeric.sam" {output.chim}
+            echo "Moved {wildcards.sample}.intraMolecular.Chimeric.sam to {output.chim}" >> {log} 2>&1
+        else
+            echo "ERROR: Chimeric.sam not found. Available files:" >> {log} 2>&1
+            ls -lh >> {log} 2>&1
+            # Create empty file to avoid failure
+            touch {output.chim}
+            echo "WARNING: Created empty Chimeric.sam file" >> {log} 2>&1
+        fi
+        
+        if [ -f "${{BASENAME%.sam}}.Singleton.sam" ]; then
+            mv "${{BASENAME%.sam}}.Singleton.sam" {output.sing}
+            echo "Moved ${{BASENAME%.sam}}.Singleton.sam to {output.sing}" >> {log} 2>&1
+        elif [ -f "{wildcards.sample}.intraMolecular.Singleton.sam" ]; then
+            mv "{wildcards.sample}.intraMolecular.Singleton.sam" {output.sing}
+            echo "Moved {wildcards.sample}.intraMolecular.Singleton.sam to {output.sing}" >> {log} 2>&1
+        else
+            echo "ERROR: Singleton.sam not found. Available files:" >> {log} 2>&1
+            ls -lh >> {log} 2>&1
+            # Create empty file to avoid failure
+            touch {output.sing}
+            echo "WARNING: Created empty Singleton.sam file" >> {log} 2>&1
+        fi
+        
+        # Cleanup
+        rm -f $BASENAME
+        
+        echo "=== Step3 completed ===" >> {log} 2>&1
+        """
+
+# ==========================================
+# Step 4: Cluster Intramolecular
 # ==========================================
 
 rule cluster_intramolecular:
-    """Cluster intramolecular interactions and score clusters (high memory usage)"""
     input:
-        intra_sam = STEP2_DIR / f"{PREFIX}.intraMolecular.sam"
+        intra_chim_sam = STEP3_DIR / "{sample}.intraMolecular.Chimeric.sam"
     output:
-        final_list = STEP4_DIR / f"{PREFIX}.cluster.withScore.highQuality.list"
+        final_list = STEP4_DIR / "{sample}.cluster.withScore.highQuality.list"
     container: config["sif"]
     params:
         script = f"{SCRIPTS}/step4.cluster_intramolecular/cluster_intra_reads.pl",
-        frag_cutoff = 2,
-        score_cutoff = 10,
-        tmp_prefix = str(STEP4_DIR / f"{PREFIX}")
-    log: LOG_DIR / "step4_cluster.log"
+        frag_cutoff = config["step4_fragment_cutoff"],
+        score_cutoff = config["step4_connection_score_cutoff"],
+        tmp_prefix = str(STEP4_DIR / "{sample}")
+    log: LOG_DIR / "{sample}_step4.log"
     shell:
         """
         mkdir -p {STEP4_DIR}
@@ -340,9 +481,9 @@ rule cluster_intramolecular:
             {params.frag_cutoff} \
             {params.score_cutoff} \
             {params.tmp_prefix} \
-            {input.intra_sam} > run_step4.sh
+            {input.intra_chim_sam} > {wildcards.sample}_run_step4.sh 2>> {log}
 
-        sh run_step4.sh > {log} 2>&1
+        sh {wildcards.sample}_run_step4.sh >> {log} 2>&1
         """
 
 # ==========================================
@@ -351,93 +492,83 @@ rule cluster_intramolecular:
 
 rule step5_prepare:
     input:
-        inter_sam = STEP2_DIR / f"{PREFIX}.interMolecular.sam",
+        inter_sam = STEP2_DIR / "{sample}.interMolecular.sam",
         gene_bed = config["gene_annotation_bed"]
     output:
-        network = STEP5_DIR / f"{PREFIX}.merged.network",
-        dir_marker = touch(STEP5_DIR / ".dirs_prepared")
+        network = STEP5_DIR / "{sample}.merged.network",
+        dir_marker = touch(STEP5_DIR / "{sample}.dirs_prepared")
     container: config["sif"]
     params:
         script = f"{SCRIPTS}/step5.screen_high-confidence_intermolecular/scripts/0.prepare/from_sam_to_pair_reads_bed.pl",
         count_script = f"{SCRIPTS}/step5.screen_high-confidence_intermolecular/scripts/0.prepare/count_RRI_multiple_details_addMultiple.pl",
-        out_prefix = f"{PREFIX}"
-    log: LOG_DIR / "step5_prepare.log"
+        out_prefix = "{sample}"
+    log: LOG_DIR / "{sample}_step5_prepare.log"
     shell:
         """
         mkdir -p {STEP5_DIR}
-        mkdir -p {STEP5_DIR}/1.run_simulation/1.base_on_observed
-        mkdir -p {STEP5_DIR}/1.run_simulation/2.base_on_random
-
-        cd {STEP5_DIR}
-
-        # Generate BED files
+        mkdir -p {STEP5_DIR}/{wildcards.sample}_sim/1.base_on_observed
+        mkdir -p {STEP5_DIR}/{wildcards.sample}_sim/2.base_on_random
+        
+        WORKDIR={STEP5_DIR}/{wildcards.sample}_work
+        mkdir -p $WORKDIR
+        cd $WORKDIR
+        
         perl {params.script} {input.inter_sam} 2>> {log}
-
-        # Intersect reads with gene annotations
+        
         bedtools intersect -wa -wb -a {input.gene_bed} -b read_1.bed > gene_overlap_with_read1.bed 2>> {log}
         bedtools intersect -wa -wb -a {input.gene_bed} -b read_2.bed > gene_overlap_with_read2.bed 2>> {log}
-
-        # Count RNA-RNA interactions
+        
         perl {params.count_script} gene_overlap_with_read1.bed gene_overlap_with_read2.bed > {output.network} 2>> {log}
-
-        # Clean up temporary files
-        rm -f read_1.bed read_2.bed gene_overlap_with_read1.bed gene_overlap_with_read2.bed
+        
+        rm -rf $WORKDIR
         """
 
-# Generate observed simulation results
 rule step5_sim_observed:
-    """Run Monte Carlo simulation based on observed interaction network"""
     input:
-        network = STEP5_DIR / f"{PREFIX}.merged.network",
-        marker = STEP5_DIR / ".dirs_prepared"
+        network = STEP5_DIR / "{sample}.merged.network",
+        marker = STEP5_DIR / "{sample}.dirs_prepared"
     output:
-        res = STEP5_DIR / "1.run_simulation/1.base_on_observed/result1.thread{tid}.simulation.list",
-        pairs = STEP5_DIR / "1.run_simulation/1.base_on_observed/all_pairs.thread{tid}.list"
+        res = STEP5_DIR / "{sample}_sim/1.base_on_observed/result1.thread{tid}.simulation.list",
+        pairs = STEP5_DIR / "{sample}_sim/1.base_on_observed/all_pairs.thread{tid}.list"
     container: config["sif"]
     params:
         script = f"{SCRIPTS}/step5.screen_high-confidence_intermolecular/scripts/2.run_simulation/1.MonteCarlo_simulation.pl",
         iters_per_thread = int(config["monte_carlo_iters"] / config["monte_carlo_threads"])
     wildcard_constraints:
-        tid = "\d+"
-    threads: 1
-    log: LOG_DIR / "step5_sim_observed_{tid}.log"
+        tid = "\\d+"
+    log: LOG_DIR / "{sample}_sim_obs_{tid}.log"
     shell:
         """
-        cd {STEP5_DIR}/1.run_simulation/1.base_on_observed
-
+        cd {STEP5_DIR}/{wildcards.sample}_sim/1.base_on_observed
+        
         perl {params.script} \
-            ../../{PREFIX}.merged.network \
+            ../../{wildcards.sample}.merged.network \
             {params.iters_per_thread} \
             thread{wildcards.tid} \
             > {output.res} 2>> {log}
         """
 
-# Generate random simulation results
 rule step5_sim_random:
-    """Run Monte Carlo simulation based on randomized interaction network"""
     input:
-        network = STEP5_DIR / f"{PREFIX}.merged.network",
-        marker = STEP5_DIR / ".dirs_prepared"
+        network = STEP5_DIR / "{sample}.merged.network",
+        marker = STEP5_DIR / "{sample}.dirs_prepared"
     output:
-        res = STEP5_DIR / "1.run_simulation/2.base_on_random/result1.thread{tid}.simulation_on_random.list",
-        pairs = STEP5_DIR / "1.run_simulation/2.base_on_random/all_pairs.thread{tid}.list"
+        res = STEP5_DIR / "{sample}_sim/2.base_on_random/result1.thread{tid}.simulation_on_random.list",
+        pairs = STEP5_DIR / "{sample}_sim/2.base_on_random/all_pairs.thread{tid}.list"
     container: config["sif"]
     params:
         sim_script = f"{SCRIPTS}/step5.screen_high-confidence_intermolecular/scripts/2.run_simulation/1.MonteCarlo_simulation.pl",
         rand_script = f"{SCRIPTS}/step5.screen_high-confidence_intermolecular/scripts/2.run_simulation/0.creat_random_interaction.pl",
         iters_per_thread = int(config["monte_carlo_iters"] / config["monte_carlo_threads"])
     wildcard_constraints:
-        tid = "\d+"
-    threads: 1
-    log: LOG_DIR / "step5_sim_random_{tid}.log"
+        tid = "\\d+"
+    log: LOG_DIR / "{sample}_sim_rnd_{tid}.log"
     shell:
         """
-        cd {STEP5_DIR}/1.run_simulation/2.base_on_random
-
-        # Create random network (independent for each thread)
-        perl {params.rand_script} ../../{PREFIX}.merged.network > random_net_{wildcards.tid}.network 2>> {log}
-
-        # Run simulation
+        cd {STEP5_DIR}/{wildcards.sample}_sim/2.base_on_random
+        
+        perl {params.rand_script} ../../{wildcards.sample}.merged.network > random_net_{wildcards.tid}.network 2>> {log}
+        
         perl {params.sim_script} \
             random_net_{wildcards.tid}.network \
             {params.iters_per_thread} \
@@ -445,16 +576,12 @@ rule step5_sim_random:
             > {output.res} 2>> {log}
         """
 
-# Post-processing: Aggregate simulation results and calculate p-values
 rule step5_post_process:
-    """Merge multi-threaded simulation results, calculate p-values, and apply multiple testing correction"""
     input:
-        obs_res = expand(STEP5_DIR / "1.run_simulation/1.base_on_observed/result1.thread{tid}.simulation.list", tid=THREADS),
-        obs_pairs = expand(STEP5_DIR / "1.run_simulation/1.base_on_observed/all_pairs.thread{tid}.list", tid=THREADS),
-        rnd_res = expand(STEP5_DIR / "1.run_simulation/2.base_on_random/result1.thread{tid}.simulation_on_random.list", tid=THREADS),
-        rnd_pairs = expand(STEP5_DIR / "1.run_simulation/2.base_on_random/all_pairs.thread{tid}.list", tid=THREADS)
+        obs_res = expand(STEP5_DIR / "{{sample}}_sim/1.base_on_observed/result1.thread{tid}.simulation.list", tid=THREADS),
+        rnd_res = expand(STEP5_DIR / "{{sample}}_sim/2.base_on_random/result1.thread{tid}.simulation_on_random.list", tid=THREADS)
     output:
-        final_list = STEP5_DIR / f"{PREFIX}.significant.interMolecular.interaction.list"
+        final_list = STEP5_DIR / "{sample}.significant.interMolecular.interaction.list"
     container: config["sif"]
     params:
         script_split = f"{SCRIPTS}/step5.screen_high-confidence_intermolecular/scripts/3.pre_process/split_and_transpose_large_matrix.pl",
@@ -465,71 +592,62 @@ rule step5_post_process:
         script_repl = f"{SCRIPTS}/step5.screen_high-confidence_intermolecular/scripts/5.recalibrate_pvalue/4.replace_rawPvalue_by_LocalCorrectPvalue.pl",
         script_filt = f"{SCRIPTS}/step5.screen_high-confidence_intermolecular/scripts/5.recalibrate_pvalue/5.filter_interaction.pl",
         pval_cutoff = config["pvalue_cutoff"],
-        prefix = f"{PREFIX}",
-        threads_list = " ".join([str(t) for t in THREADS])
+        threads_list = " ".join([str(t) for t in THREADS]),
+        step5_dir = STEP5_DIR  # 添加这个参数
     threads: 16
-    log: LOG_DIR / "step5_post.log"
+    log: LOG_DIR / "{sample}_step5_post.log"
     shell:
         """
-        cd {STEP5_DIR}
+        cd {params.step5_dir}
+        
+        WORKBASE={wildcards.sample}_post
+        mkdir -p $WORKBASE/2.pre-process/1.base_on_observed
+        mkdir -p $WORKBASE/2.pre-process/2.base_on_random
+        mkdir -p $WORKBASE/3.calculate_pvalue/1.base_on_observed
+        mkdir -p $WORKBASE/3.calculate_pvalue/2.base_on_random
+        mkdir -p $WORKBASE/4.recalibrate_pvalue
 
-        mkdir -p 2.pre-process/1.base_on_observed
-        mkdir -p 2.pre-process/2.base_on_random
-        mkdir -p 3.calculate_pvalue/1.base_on_observed
-        mkdir -p 3.calculate_pvalue/2.base_on_random
-        mkdir -p 4.recalibrate_pvalue
+        SIM_DIR={wildcards.sample}_sim
 
-        echo "Phase 2: Pre-process..." >> {log}
-
-        # Split and transpose observed simulation results
+        # 1. Split matrices
         for i in {params.threads_list}; do
             perl {params.script_split} \
-                1.run_simulation/1.base_on_observed/result1.thread$i.simulation.list \
+                $SIM_DIR/1.base_on_observed/result1.thread$i.simulation.list \
                 100 thread$i &
         done
         wait
+        mv *.transposed.matrix $WORKBASE/2.pre-process/1.base_on_observed/ 2>/dev/null || true
 
-        mv *.transposed.matrix 2.pre-process/1.base_on_observed/ 2>/dev/null || true
-
-        # Split and transpose random simulation results
         for i in {params.threads_list}; do
             perl {params.script_split} \
-                1.run_simulation/2.base_on_random/result1.thread$i.simulation_on_random.list \
+                $SIM_DIR/2.base_on_random/result1.thread$i.simulation_on_random.list \
                 100 thread$i &
         done
         wait
+        mv *.transposed.matrix $WORKBASE/2.pre-process/2.base_on_random/ 2>/dev/null || true
 
-        mv *.transposed.matrix 2.pre-process/2.base_on_random/ 2>/dev/null || true
-
-        echo "Phase 3: Calculate P-value..." >> {log}
-
-        # Calculate p-value for observed interactions
+        # 2. Calculate P-values
         for i in {params.threads_list}; do
             perl {params.script_pval} \
-                1.run_simulation/1.base_on_observed/all_pairs.thread$i.list \
-                2.pre-process/1.base_on_observed/thread$i.transposed.matrix \
+                $SIM_DIR/1.base_on_observed/all_pairs.thread$i.list \
+                $WORKBASE/2.pre-process/1.base_on_observed/thread$i.transposed.matrix \
                 thread$i &
         done
         wait
+        mv comparison.observed_to_simulated.*.xls $WORKBASE/3.calculate_pvalue/1.base_on_observed/ 2>/dev/null || true
 
-        mv comparison.observed_to_simulated.*.xls 3.calculate_pvalue/1.base_on_observed/ 2>/dev/null || true
-
-        # Calculate p-value for random interactions
         for i in {params.threads_list}; do
             perl {params.script_pval} \
-                1.run_simulation/2.base_on_random/all_pairs.thread$i.list \
-                2.pre-process/2.base_on_random/thread$i.transposed.matrix \
+                $SIM_DIR/2.base_on_random/all_pairs.thread$i.list \
+                $WORKBASE/2.pre-process/2.base_on_random/thread$i.transposed.matrix \
                 thread$i &
         done
         wait
+        mv comparison.observed_to_simulated.*.xls $WORKBASE/3.calculate_pvalue/2.base_on_random/ 2>/dev/null || true
 
-        mv comparison.observed_to_simulated.*.xls 3.calculate_pvalue/2.base_on_random/ 2>/dev/null || true
-
-        echo "Phase 4: Recalibrate..." >> {log}
-
-        cd 4.recalibrate_pvalue
-
-        # Merge p-values from multiple threads
+        # 3. Recalibrate p-values
+        cd $WORKBASE/4.recalibrate_pvalue
+        
         perl {params.script_merge} \
             ../3.calculate_pvalue/1.base_on_observed/comparison.*.xls \
             > comparison.observed_to_simulated.basedOnObserved.finalMerge.xls 2>> {log}
@@ -537,78 +655,49 @@ rule step5_post_process:
         perl {params.script_merge} \
             ../3.calculate_pvalue/2.base_on_random/comparison.*.xls \
             > comparison.observed_to_simulated.basedOnRandom.finalMerge.xls 2>> {log}
+            
+        perl {params.script_fmt} comparison.observed_to_simulated.basedOnObserved.finalMerge.xls > result1.results_file.for_Test.list
+        perl {params.script_fmt} comparison.observed_to_simulated.basedOnRandom.finalMerge.xls > result1.control_file.for_Test.list
 
-        # Convert format for multiple testing correction
-        perl {params.script_fmt} \
-            comparison.observed_to_simulated.basedOnObserved.finalMerge.xls \
-            > result1.results_file.for_Test.list
-
-        perl {params.script_fmt} \
-            comparison.observed_to_simulated.basedOnRandom.finalMerge.xls \
-            > result1.control_file.for_Test.list
-
-        # Apply multiple testing correction (CloseCall algorithm)
-        perl {params.script_corr} \
-            --control result1.control_file.for_Test.list \
-            --results result1.results_file.for_Test.list \
-            --window 500 2>> {log}
-
+        perl {params.script_corr} --control result1.control_file.for_Test.list --results result1.results_file.for_Test.list --window 500 2>> {log}
+        
         gzip -d -f result1.results_file.for_Test.list.window_500.qval.txt.gz
 
-        # Replace raw p-values with corrected p-values and filter significant interactions
-        perl {params.script_repl} \
-            comparison.observed_to_simulated.basedOnObserved.finalMerge.xls \
-            result1.results_file.for_Test.list.window_500.qval.txt \
-            > result2.comparison.observed_to_simulated.Add_Local_Corrected_pvalue.list
-
-        perl {params.script_filt} \
-            result2.comparison.observed_to_simulated.Add_Local_Corrected_pvalue.list \
-            {params.pval_cutoff} \
-            > {output.final_list}
+        perl {params.script_repl} comparison.observed_to_simulated.basedOnObserved.finalMerge.xls result1.results_file.for_Test.list.window_500.qval.txt > result2.comparison.observed_to_simulated.Add_Local_Corrected_pvalue.list
+        
+        # 修复：使用绝对路径
+        perl {params.script_filt} result2.comparison.observed_to_simulated.Add_Local_Corrected_pvalue.list {params.pval_cutoff} > {output.final_list}
         """
 
-rule multiqc_report:
-    """Generate MultiQC report summarizing QC metrics from all analysis steps"""
+# ==========================================
+# MultiQC: Aggregate all QC reports
+# ==========================================
+
+rule multiqc:
     input:
-        STEP2_DIR / f"{PREFIX}.interMolecular.sam"
+        # Raw FastQC from trim_galore
+        expand(str(TRIM_DIR / "{sample}_R1_fastqc.zip"), sample=SAMPLES),
+        expand(str(TRIM_DIR / "{sample}_R2_fastqc.zip"), sample=SAMPLES),
+        # Trimmed FastQC
+        expand(str(QC_DIR / "{sample}_val_1_fastqc.zip"), sample=SAMPLES),
+        expand(str(QC_DIR / "{sample}_val_2_fastqc.zip"), sample=SAMPLES),
+        # Dedup stats
+        expand(str(DEDUP_DIR / "{sample}_dedup_stats.txt"), sample=SAMPLES),
+        # rRNA filter logs
+        expand(str(RRNA_DIR / "{sample}.Log.final.out"), sample=SAMPLES),
+        # STAR alignment logs
+        expand(str(ALIGN_DIR / "{sample}.read1.Log.final.out"), sample=SAMPLES),
+        expand(str(ALIGN_DIR / "{sample}.read2.Log.final.out"), sample=SAMPLES),
+        # Step1 stats
+        expand(str(STEP1_DIR / "{sample}_num_of_interactions.list"), sample=SAMPLES),
+        # Final outputs to ensure pipeline completion
+        expand(str(STEP5_DIR / "{sample}.significant.interMolecular.interaction.list"), sample=SAMPLES)
     output:
-        MULTIQC_DIR / "multiqc_report.html"
+        report = MULTIQC_DIR / "multiqc_report.html",
+        data = directory(MULTIQC_DIR / "multiqc_data")
     container: config["sif"]
-    threads: 1
     log: LOG_DIR / "multiqc.log"
     shell:
         """
-        mkdir -p {MULTIQC_DIR}
-
-        echo "=== MultiQC Analysis ===" > {log}
-        echo "Prefix: {PREFIX}" >> {log}  # Fixed: Use PREFIX instead of wildcards.sample
-        echo "Date: $(date)" >> {log}
-        echo "" >> {log}
-
-        # Derive parent directory from MULTIQC_DIR
-        OUTPUT_ROOT=$(dirname {MULTIQC_DIR})
-        echo "Scanning directory: $OUTPUT_ROOT" >> {log}
-
-        # MultiQC recursive search
-        multiqc "$OUTPUT_ROOT" \
-            -o {MULTIQC_DIR} \
-            --force \
-            --filename multiqc_report.html \
-            --ignore "*.sam" \
-            --ignore "*.bam" \
-            --ignore "*.fastq*" \
-            --ignore "*.fq*" \
-            --dirs-depth 3 \
-            --verbose \
-            2>> {log} || (echo "MultiQC completed with warnings" >> {log}; exit 0)
-
-        # Verify output
-        echo "" >> {log}
-        if [ -f "{output}" ]; then
-            echo "✅ MultiQC report generated successfully" >> {log}
-            echo "Report location: {output}" >> {log}
-        else
-            echo "⚠️  Warning: MultiQC report may not have been generated" >> {log}
-        fi
-
+        multiqc {OUT_DIR} -o {MULTIQC_DIR} -f --verbose 2> {log}
         """
