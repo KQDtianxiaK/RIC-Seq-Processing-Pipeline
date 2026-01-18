@@ -1,49 +1,39 @@
 # Config for RIC-seq Pipeline
 
-# Samples configuration
-# Format: sample_name: { R1: path, R2: path }
+# Samples configuration (supports multiple samples)
 samples:
-  RIC-seq_pcp_minus_HeLa_Total_rep1:
-    R1: "/mnt/home/kangkai/RiC/rawdata/RIC-seq_pcp_minus_HeLa_Total_rep1_1.fastq.gz"
-    R2: "/mnt/home/kangkai/RiC/rawdata/RIC-seq_pcp_minus_HeLa_Total_rep1_2.fastq.gz"
-  # Add more samples here
-  RIC-seq_pcp_minus_HeLa_Total_rep2:
-    R1: "/mnt/home/kangkai/RiC/rawdata/RIC-seq_pcp_minus_HeLa_Total_rep2_1.fastq.gz"
-    R2: "/mnt/home/kangkai/RiC/rawdata/RIC-seq_pcp_minus_HeLa_Total_rep2_2.fastq.gz"
-  #   R1: ...
-  #   R2: ...
+  sample1:
+    R1: "/path/to/rawdata/sample1_R1.fastq.gz"
+    R2: "/path/to/rawdata/sample1_R2.fastq.gz"
+  sample2:
+    R1: "/path/to/rawdata/sample2_R1.fastq.gz"
+    R2: "/path/to/rawdata/sample2_R2.fastq.gz"
 
 # Output directory
-outputdir: "/mnt/home/kangkai/RiC/output_v2_1"
+outputdir: "/path/to/output"
 
 # Singularity container
-sif: "/mnt/home/kangkai/RiC/Containers/RIC-seq_v2.sif"
+sif: "/path/to/Containers/RIC-seq_v2.sif"
 
 # Resources
 threads: 16
 
 # Reference files
-# rRNA index for pre-filtering (using STAR index format)
-# Note: User must build this index first (e.g., using 45S pre-rRNA or rDNA)
-rRNA_index: "/mnt/home/kangkai/RiC/References/hg38/rRNA_STAR_index"
-
-# Genome index
-star_index: "/mnt/home/kangkai/RiC/References/hg38/STAR_index"
-junction_bed: "/mnt/home/kangkai/RiC/References/hg38/gencode.v38.all_exon_junction.bed"
-gene_annotation_bed: "/mnt/home/kangkai/RiC/References/hg38/whole_gene_region.bed"
+rRNA_index: "/path/to/References/hg38/rRNA_STAR_index"
+star_index: "/path/to/References/hg38/STAR_index"
+junction_bed: "/path/to/References/hg38/gencode.v38.all_exon_junction.bed"
+gene_annotation_bed: "/path/to/References/hg38/whole_gene_region.bed"
 
 # Script paths (container internal path)
 scripts_root: "/mnt/RICseq_scripts_root"
 
 # Analysis parameters
-# Step 3/4 intramolecular interaction parameters
-fragment_len_cutoff: 1000  # Fragment length cutoff for Step 3 categorization
+# Step 3/4: Intramolecular interaction parameters
+fragment_len_cutoff: 1000              # Fragment length cutoff for categorization
+step4_fragment_cutoff: 2                # Minimum unique fragment number for clustering
+step4_connection_score_cutoff: 0.01    # Connection score cutoff (Nature 2020 default)
 
-# Step 4 clustering parameters (from Nature 2020 paper)
-step4_fragment_cutoff: 2         # Minimum unique fragment number for clustering
-step4_connection_score_cutoff: 0.01  # Connection score cutoff (paper default)
-
-# Step 5 intermolecular interaction parameters
-pvalue_cutoff: 0.05           # P-value cutoff for significant interactions
-monte_carlo_iters: 100000     # Monte Carlo iterations (Nature 2020 used 100,000)
-monte_carlo_threads: 16       # Parallel threads for Monte Carlo simulation
+# Step 5: Intermolecular interaction parameters
+pvalue_cutoff: 0.05                    # P-value threshold for significant interactions
+monte_carlo_iters: 100000              # Monte Carlo iterations (Nature 2020 used 100,000)
+monte_carlo_threads: 16                # Parallel threads for Monte Carlo simulation
