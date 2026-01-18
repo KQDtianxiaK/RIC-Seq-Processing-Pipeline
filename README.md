@@ -19,7 +19,7 @@ The RIC-seq pipeline consists of six major analytical steps:
 - **Step 4: Clustering** - Cluster intra-molecular chimeric reads into high-confidence RNA structural interactions
 - **Step 5: Network Analysis** - Screen significant inter-molecular RNA-RNA interactions using Monte Carlo simulation with local multiple testing correction
 
-The workflow is fully containerized using Singularity (v1.2) with all required bioinformatics tools and Perl modules pre-installed, and the entire pipeline can be executed with a single Snakemake command.
+The workflow is fully containerized using Singularity with all required bioinformatics tools and Perl modules pre-installed, and the entire pipeline can be executed with a single Snakemake command.
 
 ## Requirements
 
@@ -449,7 +449,7 @@ For a successful RIC-seq experiment:
 4. **Multi-sample Support** — Configuration file now supports processing multiple samples in a single run
 5. **Improved Error Handling** — Enhanced robustness in Step 3 and Step 5 with better file handling and fallback mechanisms
 6. **Updated Parameters** — Aligned clustering and network analysis parameters with Nature 2020 protocol (100,000 Monte Carlo iterations)
-7. **Complete Containerization** — All tools and scripts packaged in Singularity v1.2 container
+7. **Complete Containerization** — All tools and scripts packaged in Singularity container
 
 ### Workflow Changes
 
