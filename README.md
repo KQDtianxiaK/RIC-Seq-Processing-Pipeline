@@ -1,8 +1,8 @@
 # RIC-seq Processing Pipeline
 
-This pipeline processes raw RIC-seq (RNA In situ Conformation sequencing) FASTQ data through a comprehensive workflow including quality control, adapter trimming, PCR duplicate removal, genome alignment, paired-end tag collection, and downstream analysis to identify both intra-molecular and inter-molecular RNA-RNA interactions. The entire workflow is fully containerized using Singularity and orchestrated by Snakemake, ensuring reproducibility and ease of deployment.
+This pipeline processes raw RIC-seq (RNA In situ Conformation sequencing) FASTQ data through a comprehensive workflow including quality control, adapter trimming, PCR duplicate removal, rRNA filtration, genome alignment, paired-end tag collection, and downstream analysis to identify both intra-molecular and inter-molecular RNA-RNA interactions. The entire workflow is fully containerized using Singularity and orchestrated by Snakemake, ensuring reproducibility and ease of deployment.
 
-## Part I Overview
+## Overview
 
 ### What is RIC-seq?
 
@@ -10,32 +10,32 @@ RIC-seq (RNA In situ Conformation sequencing) is a proximity ligation-based tech
 
 ### Workflow Summary
 
-The RIC-seq pipeline consists of five major analytical steps:
+The RIC-seq pipeline consists of six major analytical steps:
 
-1. **Step 0: Preprocessing** - Quality control, adapter trimming, and PCR duplicate removal
-2. **Step 1: Alignment & Pairing** - STAR alignment and paired-end tag collection
-3. **Step 2: Separation** - Distinguish intra-molecular from inter-molecular interactions
-4. **Step 3: Categorization** - Classify intra-molecular reads into normal transcripts vs. chimeric structures
-5. **Step 4: Clustering** - Cluster intra-molecular chimeric reads into high-confidence interactions
-6. **Step 5: Network Analysis** - Screen significant inter-molecular RNA-RNA interactions using Monte Carlo simulation
+- **Step 0: Preprocessing** - Quality control with Trim Galore, poly-N tail removal, PCR duplicate removal, and rRNA filtration
+- **Step 1: Alignment & Pairing** - STAR alignment with chimeric read detection and paired-end tag collection  
+- **Step 2: Separation** - Distinguish intra-molecular from inter-molecular interactions based on gene annotation
+- **Step 3: Categorization** - Classify intra-molecular reads into normal transcripts vs. chimeric structures
+- **Step 4: Clustering** - Cluster intra-molecular chimeric reads into high-confidence RNA structural interactions
+- **Step 5: Network Analysis** - Screen significant inter-molecular RNA-RNA interactions using Monte Carlo simulation with local multiple testing correction
 
-The workflow is fully containerized using Singularity with all required bioinformatics tools and Perl modules pre-installed, and the entire pipeline can be executed with a single Snakemake command.
+The workflow is fully containerized using Singularity (v1.2) with all required bioinformatics tools and Perl modules pre-installed, and the entire pipeline can be executed with a single Snakemake command.
 
-## Part II Requirements
+## Requirements
 
 ### 1. Recommended System Configuration
 
-* **CPU** : 16-core processor (minimum 8 cores)
-* **RAM** : 64 GB (minimum 32 GB)
-* **Storage** : At least 200 GB free space for intermediate files
+- **CPU**: 16-core processor (minimum 8 cores)
+- **RAM**: 64 GB (minimum 32 GB)  
+- **Storage**: At least 200 GB free space for intermediate files
 
 ### 2. Singularity
 
-Singularity must be installed on your system. Below are detailed installation steps for Ubuntu 22.04. For other operating systems, refer to the [official Singularity installation guide](https://docs.sylabs.io/guides/3.0/user-guide/installation.html).
+Singularity must be installed on your system. Below are detailed installation steps for Ubuntu 22.04. For other operating systems, refer to the [official Singularity installation guide](https://docs.sylabs.io/guides/latest/user-guide/).
 
 **Step 1: Install System Dependencies**
 
-```
+```bash
 # Update package lists and install dependencies
 sudo apt-get update
 sudo apt-get install -y \
@@ -50,7 +50,7 @@ sudo apt-get install -y \
 
 **Step 2: Install Go Language**
 
-```
+```bash
 # Download and install Go
 wget https://go.dev/dl/go1.21.3.linux-amd64.tar.gz
 sudo tar -C /usr/local -xzvf go1.21.3.linux-amd64.tar.gz
@@ -64,9 +64,9 @@ source ~/.bashrc
 
 **Step 3: Download, Build, and Install Singularity**
 
-```
+```bash
 # Navigate to your preferred directory for source code
-cd /mnt/share/software
+cd /path/to/software
 
 # Download Singularity CE source
 wget https://github.com/sylabs/singularity/releases/download/v4.0.1/singularity-ce-4.0.1.tar.gz
@@ -82,7 +82,7 @@ sudo make install
 
 **Step 4: Verify Installation**
 
-```
+```bash
 # Check installed version
 singularity --version
 
@@ -94,7 +94,7 @@ singularity -h
 
 Snakemake must be installed and requires Python 3.
 
-```
+```bash
 pip install snakemake
 ```
 
@@ -104,7 +104,7 @@ The pipeline requires several reference files for the human genome (hg38 is used
 
 **4.1 STAR Genome Index**
 
-```
+```bash
 mkdir -p References/hg38
 cd References
 
@@ -116,8 +116,8 @@ wget https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_38/gencod
 gunzip GRCh38.primary_assembly.genome.fa.gz
 gunzip gencode.v38.primary_assembly.annotation.gtf.gz
 
-# Build STAR index
-singularity exec --cleanenv RIC-seq.sif STAR \
+# Build STAR index (requires Singularity container)
+singularity exec --cleanenv RIC-seq_v2.sif STAR \
     --runMode genomeGenerate \
     --genomeDir ./hg38/STAR_index \
     --genomeFastaFiles GRCh38.primary_assembly.genome.fa \
@@ -126,33 +126,51 @@ singularity exec --cleanenv RIC-seq.sif STAR \
     --runThreadN 16
 ```
 
-**4.2 Gene Annotation Files**
+**4.2 rRNA Index**
+
+Build a separate STAR index for rRNA sequences to filter out ribosomal RNA contamination:
+
+```bash
+# Download rRNA sequences (example: 45S pre-rRNA from NCBI)
+wget -O rRNA.fa "https://www.ncbi.nlm.nih.gov/sviewer/viewer.cgi?tool=portal&save=file&log$=seqview&db=nuccore&report=fasta&id=555853"
+
+# Build rRNA STAR index
+singularity exec --cleanenv RIC-seq_v2.sif STAR \
+    --runMode genomeGenerate \
+    --genomeDir ./hg38/rRNA_STAR_index \
+    --genomeFastaFiles rRNA.fa \
+    --genomeSAindexNbases 8 \
+    --runThreadN 16
+```
+
+**4.3 Gene Annotation Files**
 
 The pipeline requires two specialized BED files:
 
-* **Junction BED** : Contains pairwise splicing site information
-* **Gene Annotation BED** : Contains whole gene region information with Gene IDs
+- **Junction BED**: Contains pairwise splicing site information
+- **Gene Annotation BED**: Contains whole gene region information with Gene IDs
 
 Generate junction BED file:
 
-```
+```bash
 # Convert GTF to BED
 perl scripts/gtf_to_bed.pl gencode.v38.primary_assembly.annotation.gtf > gencode.v38.annotation.bed
 
-# Create junction BED
+# Create junction BED  
 perl scripts/creat_junction_bed.pl gencode.v38.annotation.bed > gencode.v38.all_exon_junction.bed
 ```
 
 Create whole gene region BED (must include Gene ID and detailed information):
 
-```
+```bash
 # Example format: chr, start, end, gene_name, score, strand
 awk 'BEGIN{OFS="\t"} $3=="gene" {print $1, $4-1, $5, $10, "60", $7}' \
     gencode.v38.primary_assembly.annotation.gtf | \
     sed 's/"//g' | sed 's/;//g' > whole_gene_region.bed
 ```
 
-**4.3 Adapter Sequences**
+
+**4.4 Adapter Sequences**
 
 Prepare an adapter FASTA file containing Illumina adapter sequences for trimming.
 
@@ -174,7 +192,22 @@ CTGTCTCTTATACACATCTCCGAGCCCACGAGAC
 EOF
 ```
 
-### 5. Required File Structure
+### 5. Building the Singularity Container
+
+The Singularity container includes all required tools and Perl modules. Build it using the provided definition file:
+
+```bash
+# Build the container (requires sudo)
+sudo singularity build RIC-seq_v2.sif RIC-seq_v2.def
+```
+
+The container (v1.2) includes:
+- **Bioinformatics Tools**: FastQC v0.12.1, STAR v2.7.11b, SAMtools v1.22.1, BEDtools v2.28.0
+- **Quality Control**: Trim Galore v0.6.10, cutadapt v3.4, MultiQC v1.19
+- **Perl Modules**: List::Util, File::Spec, Getopt::Long, Graph::Undirected, Statistics::Distributions, Math::CDF
+- **Analysis Scripts**: Complete RICpipe scripts pre-installed at `/mnt/RICseq_scripts_root/`
+
+### 6. Required File Structure
 
 ```
 project_directory/
@@ -184,253 +217,351 @@ project_directory/
 ├── Containers/
 │   └── RIC-seq.sif
 ├── References/
-    ├── hg38/
-    │   └── STAR_index/
-    ├── gencode.v38.all_exon_junction.bed
-    ├── whole_gene_region.bed
-    └── adapter.fa
+│   ├── hg38/
+│   │   ├── STAR_index/
+│   │   └── rRNA_STAR_index/
+│   ├── gencode.v38.all_exon_junction.bed
+│   └── whole_gene_region.bed
+└── rawdata/
+    ├── sample1_R1.fastq.gz
+    └── sample1_R2.fastq.gz
 ```
 
 **File Descriptions:**
 
-* **RICseq.smk** — Main Snakemake workflow script
-* **config.yaml** — Configuration file with paths, parameters, and sample information (⚠️ must be in the same directory as RICseq.smk)
-* **RIC-seq.sif** — Singularity container with all required tools and Perl modules
-* **STAR_index/** — STAR genome index directory
-* **gencode.v38.all_exon_junction.bed** — Pairwise splicing site annotation (generated from GTF)
-* **whole_gene_region.bed** — Whole gene regions with Gene IDs
-* **adapter.fa** — Illumina adapter sequences
-* **RICseq_scripts_root/** — Directory containing all Perl analysis scripts (It has been packaged in the SIF file)
+- **RICseq.smk** — Main Snakemake workflow script with improved error handling
+- **config.yaml** — Configuration file supporting multiple samples
+- **RIC-seq.sif** — Singularity container with Trim Galore and all dependencies
+- **STAR_index/** — STAR genome index directory
+- **rRNA_STAR_index/** — STAR rRNA index for pre-filtering
+- **gencode.v38.all_exon_junction.bed** — Pairwise splicing site annotation
+- **whole_gene_region.bed** — Whole gene regions with Gene IDs
 
-## Part III Running the Pipeline
+## Running the Pipeline
 
-### Example Execution
+### Configuration
 
-**Step 1: Edit `config.yaml`**
+**Edit `config.yaml` to specify your samples and parameters:**
 
-```
-# Sample information
-prefix: "RIC-seq_HeLa_Total_rep1"
-
-# Input files
-fastq:
-  R1: "/path/to/rawdata/RIC-seq_HeLa_Total_rep1_1.fastq.gz"
-  R2: "/path/to/rawdata/RIC-seq_HeLa_Total_rep1_2.fastq.gz"
+```yaml
+# Samples configuration (supports multiple samples)
+samples:
+  sample1:
+    R1: "/path/to/rawdata/sample1_R1.fastq.gz"
+    R2: "/path/to/rawdata/sample1_R2.fastq.gz"
+  sample2:
+    R1: "/path/to/rawdata/sample2_R1.fastq.gz"
+    R2: "/path/to/rawdata/sample2_R2.fastq.gz"
 
 # Output directory
 outputdir: "/path/to/output"
 
 # Singularity container
-sif: "/path/to/Containers/RIC-seq-v1.2.sif"
+sif: "/path/to/Containers/RIC-seq_v2.sif"
 
 # Resources
 threads: 16
 
 # Reference files
+rRNA_index: "/path/to/References/hg38/rRNA_STAR_index"
 star_index: "/path/to/References/hg38/STAR_index"
 junction_bed: "/path/to/References/hg38/gencode.v38.all_exon_junction.bed"
 gene_annotation_bed: "/path/to/References/hg38/whole_gene_region.bed"
-adapterFa: "/path/to/References/adapter.fa"
-trimmomatic_jar: "/mnt/software/Trimmomatic-0.36/trimmomatic-0.36.jar"
 
 # Script paths (container internal path)
 scripts_root: "/mnt/RICseq_scripts_root"
 
-# Trimmomatic parameters
-trimmomatic_params: "ILLUMINACLIP:{adapter}:2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:36"
-
 # Analysis parameters
-fragment_len_cutoff: 1000      # For Step 3/4
-pvalue_cutoff: 0.05             # For Step 5
-monte_carlo_iters: 1000         # For Step 5
-monte_carlo_threads: 16         # For Step 5
+# Step 3/4: Intramolecular interaction parameters
+fragment_len_cutoff: 1000              # Fragment length cutoff for categorization
+step4_fragment_cutoff: 2                # Minimum unique fragment number for clustering
+step4_connection_score_cutoff: 0.01    # Connection score cutoff (Nature 2020 default)
+
+# Step 5: Intermolecular interaction parameters
+pvalue_cutoff: 0.05                    # P-value threshold for significant interactions
+monte_carlo_iters: 100000              # Monte Carlo iterations (Nature 2020 used 100,000)
+monte_carlo_threads: 16                # Parallel threads for Monte Carlo simulation
 ```
 
-**Step 2: Run Snakemake**
+### Execution
 
+**Step 1: Dry Run (Optional)**
+
+Verify the workflow without executing:
+
+```bash
+snakemake -s Scripts/RICseq.smk \
+    --configfile Scripts/config.yaml \
+    --use-singularity \
+    --cores 16 -n
 ```
-# Dry run to check workflow
-snakemake -s RICseq.smk --use-singularity --cores 16 -n
 
-# Execute pipeline
-snakemake -s RICseq.smk --use-singularity --cores 16 \
-    --singularity-args "--bind /path/to/project_directory:/path/to/project_directory"
+**Step 2: Execute Pipeline**
+
+```bash
+# Run with Singularity support
+snakemake -s Scripts/RICseq.smk \
+    --configfile Scripts/config.yaml \
+    --use-singularity \
+    --singularity-args "-B /path/to/project_directory" \
+    --cores 16 -p --rerun-incomplete
+```
+
+**Step 3: Background Execution (Recommended)**
+
+```bash
+# Run in background with nohup
+nohup snakemake -s Scripts/RICseq.smk \
+    --configfile Scripts/config.yaml \
+    --use-singularity \
+    --singularity-args "-B /path/to/project_directory" \
+    --cores 16 -p --rerun-incomplete > pipeline.log 2>&1 &
 ```
 
 ### Command Parameters
 
-**Configuration File (`config.yaml`):**
-
-* `prefix`: Sample name prefix for output files (required)
-* `fastq`: Paths to paired-end FASTQ files (R1 and R2) (required)
-* `outputdir`: Output directory path (required)
-* `sif`: Path to Singularity container image (required)
-* `threads`: Number of CPU threads to use (default: 16)
-* `star_index`: Path to STAR genome index directory (required)
-* `junction_bed`: Path to pairwise splicing junction BED file (required)
-* `gene_annotation_bed`: Path to whole gene region BED file with Gene IDs (required)
-* `adapterFa`: Path to adapter FASTA file (required)
-* `trimmomatic_jar`: Path to Trimmomatic JAR file (required)
-* `scripts_root`: Root directory containing all Perl scripts (container internal path) (required)
-* `trimmomatic_params`: Trimmomatic parameter string (optional)
-* `fragment_len_cutoff`: Minimum fragment length cutoff for categorization (default: 1000)
-* `pvalue_cutoff`: P-value threshold for significant interactions (default: 0.05)
-* `monte_carlo_iters`: Number of Monte Carlo simulation iterations (default: 1000)
-* `monte_carlo_threads`: Number of threads for Monte Carlo simulations (default: 16)
-
 **Snakemake Execution:**
 
-* `--use-singularity`: Execute rules within Singularity container
-* `--cores`: Maximum number of CPU cores for parallel execution
-* `--singularity-args "--bind"`: Mount directories into the container (format: `/host/path:/container/path`, separate multiple paths with commas)
-* `-n`: Dry run (preview workflow without execution)
+- `--configfile` — Path to configuration YAML file
+- `--use-singularity` — Execute rules within Singularity container
+- `--singularity-args "-B"` — Mount directories into the container (format: `/host/path:/container/path`, separate multiple paths with commas)
+- `--cores` — Maximum number of CPU cores for parallel execution
+- `-p` — Print shell commands for transparency
+- `-n` — Dry run (preview workflow without execution)
+- `--rerun-incomplete` — Rerun incomplete jobs from previous runs
 
-## Part IV Output
+**Unlock Directory (If Pipeline Interrupted):**
 
-### Output Structure
-
+```bash
+snakemake -s Scripts/RICseq.smk \
+    --configfile Scripts/config.yaml --unlock
 ```
 
+## Output Structure
+
+```
 output/
-├── rawdata.qc/
-│   ├── {prefix}_R1_fastqc.html
-│   ├── {prefix}_R1_fastqc.zip
-│   ├── {prefix}_R2_fastqc.html
-│   └── {prefix}_R2_fastqc.zip
-├── trim/
-│   ├── {prefix}_R1.paired.fq.gz
-│   ├── {prefix}_R2.paired.fq.gz
-│   ├── {prefix}_R1.clean.fq
-│   └── {prefix}_R2.clean.fq
-├── dedup/
-│   ├── read1.clean.rmDup.fq
-│   └── read2.clean.rmDup.fq
-├── alignment/
-│   ├── {prefix}.read1.Aligned.out.sam
-│   ├── {prefix}.read1.Chimeric.out.sam
-│   ├── {prefix}.read2.Aligned.out.sam
-│   └── {prefix}.read2.Chimeric.out.sam
-├── step1_pair_tags/
-│   └── {prefix}.interaction.sam
-├── step2_separate/
-│   ├── {prefix}.interMolecular.sam
-│   ├── {prefix}.intraMolecular.sam
-│   └── {prefix}.interMolecular.withGene.sam
-├── step3_category/
-│   ├── {prefix}.intraMolecular.Singleton.sam
-│   └── {prefix}.intraMolecular.Chimeric.sam
-├── step4_intra_cluster/
-│   └── {prefix}.cluster.withScore.highQuality.list
-├── step5_inter_network/
-|   ├── 1.run_simulation
-|   |	├── 1.base_on_observed/
-|   |	└── 2.base_on_random/
-|   ├── 2.pre-process
-|   |   ├── 1.base_on_observed/
-|   |   └── 2.base_on_random/
-|   ├── 3.calculate_pvalue
-|   |	├── 1.base_on_observed/
-|   |   └── 2.base_on_random/
-|   ├──4.recalibrate_pvalue
-│   └── {prefix}.significant.interMolecular.interaction.list
-├── multiqc/
-│   └── multiqc_report.html
-└── logs/
-    └── (various log files)
+├── qc/                          # Quality control after trimming
+│   └── {sample}_val_{1,2}_fastqc.{html,zip}
+├── trim/                        # Trimming reports and processed reads
+│   ├── {sample}_R{1,2}_fastqc.{html,zip}
+│   ├── {sample}_trimming_report.txt
+│   └── {sample}_val_{1,2}.fq.gz
+├── dedup/                       # PCR duplicate removal
+│   ├── {sample}_read{1,2}.clean.rmDup.fq
+│   └── {sample}_dedup_stats.txt
+├── rRNA_filter/                 # rRNA filtration results
+│   ├── {sample}.no_rRNA.{1,2}.fq
+│   └── {sample}.Log.final.out
+├── alignment/                   # STAR alignment
+│   ├── {sample}.read{1,2}.Aligned.out.sam
+│   ├── {sample}.read{1,2}.Chimeric.out.sam
+│   └── {sample}.read{1,2}.Log.final.out
+├── step1_pair_tags/             # Paired-end tag collection
+│   ├── {sample}.interaction.sam
+│   └── {sample}_num_of_interactions.list
+├── step2_separate/              # Intra/inter-molecular separation
+│   ├── {sample}.intraMolecular.sam
+│   ├── {sample}.interMolecular.sam
+│   └── {sample}.pets_in_same_gene.list
+├── step3_category/              # Intra-molecular categorization
+│   ├── {sample}.intraMolecular.Chimeric.sam
+│   └── {sample}.intraMolecular.Singleton.sam
+├── step4_intra_cluster/         # Intra-molecular clustering
+│   └── {sample}.cluster.withScore.highQuality.list
+├── step5_inter_network/         # Inter-molecular network analysis
+│   ├── {sample}.merged.network
+│   ├── {sample}_sim/            # Monte Carlo simulation results
+│   │   ├── 1.base_on_observed/
+│   │   └── 2.base_on_random/
+│   ├── {sample}_post/           # Post-processing
+│   │   ├── 2.pre-process/
+│   │   ├── 3.calculate_pvalue/
+│   │   └── 4.recalibrate_pvalue/
+│   └── {sample}.significant.interMolecular.interaction.list
+├── multiqc/                     # Aggregated quality control report
+│   ├── multiqc_report.html
+│   └── multiqc_data/
+└── logs/                        # Detailed logs for all steps
+    └── {sample}_{step}.log
 ```
 
-### Output Interpretation
+## Output Interpretation
 
-**Quality Control Files:**
+### Key Result Files
 
-* **`*_fastqc.html/zip`** : FastQC reports for raw sequencing data quality assessment. Check for per-base quality scores, adapter content, and overrepresented sequences.
+**Intra-molecular Interactions:**
 
-**Trimmed and Deduplicated Reads:**
+- **`{sample}.cluster.withScore.highQuality.list`** — High-confidence clustered intra-molecular RNA structures with connection scores. These represent RNA secondary/tertiary structures within individual transcripts.
 
-* **`*.clean.fq`** : Adapter-trimmed and quality-filtered reads ready for alignment
-* **`*.clean.rmDup.fq`** : PCR duplicate-removed reads, ensuring unique molecular observations
+**Inter-molecular Interactions:**
 
-**Alignment Files:**
+- **`{sample}.significant.interMolecular.interaction.list`** — Statistically significant inter-molecular RNA-RNA interactions after Monte Carlo simulation and local multiple testing correction. These represent RNA-RNA interactions between different transcripts.
 
-* **`*.Aligned.out.sam`** : Primary STAR alignments for each read
-* **`*.Chimeric.out.sam`** : Chimeric alignments capturing potential RNA-RNA interaction junctions
+### Quality Control Metrics
 
-**Key Results:**
+**FastQC Reports:**
 
-* **`{prefix}.interMolecular.sam`** : Paired-end tags representing inter-molecular RNA-RNA interactions (different RNA molecules)
-* **`{prefix}.intraMolecular.sam`** : Paired-end tags representing intra-molecular interactions (same RNA molecule)
-* **`{prefix}.cluster.withScore.highQuality.list`** : High-confidence clustered intra-molecular RNA structures with connection scores
-* **`{prefix}.significant.interMolecular.interaction.list`** : Statistically significant inter-molecular RNA-RNA interactions after Monte Carlo simulation and multiple testing correction
+- **`*_fastqc.html`** — FastQC reports for both raw and trimmed data. Check for:
+  - Per-base quality scores (should be >20 for most bases)
+  - Adapter content (should be removed after trimming)
+  - Overrepresented sequences
+  - GC content distribution
+
+**Alignment Statistics:**
+
+- **`*.Log.final.out`** — STAR alignment logs containing:
+  - Total reads
+  - Uniquely mapped reads percentage (expect >70%)
+  - Multi-mapped reads
+  - Chimeric reads (important for RIC-seq)
+
+**PCR Duplication:**
+
+- **`*_dedup_stats.txt`** — PCR duplication removal statistics
+  - Expect <30% duplication rate for good library complexity
+
+**rRNA Filtration:**
+
+- **rRNA mapping rate** — Percentage of reads mapped to rRNA (varies by sample prep)
 
 **MultiQC Report:**
 
-* **`multiqc_report.html`** : Comprehensive quality control summary integrating FastQC, alignment statistics, and processing metrics across all pipeline steps. Open in a web browser for interactive exploration.
+- **`multiqc_report.html`** — Comprehensive quality control summary integrating all QC metrics across samples. Open in a web browser for interactive exploration.
 
 ### Expected Results
 
 For a successful RIC-seq experiment:
 
-1. **Mapping Rate** : >70% uniquely mapped reads
-2. **PCR Duplication Rate** : <30% (higher rates suggest low library complexity)
-3. **Inter-molecular Interactions** : Typically 10³–10⁵ significant RNA-RNA interactions depending on sequencing depth
-4. **Intra-molecular Clusters** : Typically 10²–10⁴ high-quality structural clusters
+1. **Mapping Rate**: >70% uniquely mapped reads to genome
+2. **PCR Duplication Rate**: <30% (higher rates suggest low library complexity)
+3. **rRNA Contamination**: <20% (depends on sample preparation)
+4. **Inter-molecular Interactions**: Typically 10³–10⁵ significant RNA-RNA interactions depending on sequencing depth and p-value cutoff
+5. **Intra-molecular Clusters**: Typically 10²–10⁴ high-quality structural clusters
 
-## Part V Important Notes
+## Pipeline Updates
 
-### 1. Reference File Format Requirements
+### Key Improvements
 
-* **Junction BED** : Must be in pairwise splicing site format generated by `creat_junction_bed.pl` (6 columns for each junction pair)
-* **Gene Annotation BED** : Must contain Gene ID information in the 4th column (not just transcript IDs)
+1. **Trim Galore Integration** — Replaced Trimmomatic with Trim Galore for more streamlined adapter trimming and quality control
+2. **Poly-N Tail Removal** — Added cutadapt step to remove homopolymer tails (poly-A, poly-C, poly-G, poly-T)
+3. **rRNA Pre-filtration** — Added dedicated rRNA filtering step using STAR alignment to reduce computational burden
+4. **Multi-sample Support** — Configuration file now supports processing multiple samples in a single run
+5. **Improved Error Handling** — Enhanced robustness in Step 3 and Step 5 with better file handling and fallback mechanisms
+6. **Updated Parameters** — Aligned clustering and network analysis parameters with Nature 2020 protocol (100,000 Monte Carlo iterations)
+7. **Complete Containerization** — All tools and scripts packaged in Singularity v1.2 container
 
-### 2. Script Path Configuration
+### Workflow Changes
 
-The `scripts_root` parameter must point to the directory **inside the container** where all Perl scripts are located. This directory should contain:
+| Step | v1 | v2 |
+|------|----|----|
+| Trimming | Trimmomatic + manual adapter file | Trim Galore (automated) |
+| Poly-N removal | Not included | cutadapt with homopolymer detection |
+| rRNA filtering | Not included | STAR alignment to rRNA index |
+| Monte Carlo iterations | 1,000 | 100,000 (Nature 2020) |
+| Multi-sample | Manual configuration | Native YAML support |
 
-* `remove_PCR_duplicates.pl` at the root
-* A `scripts/` subdirectory with all supporting Perl scripts
+## Troubleshooting
 
-### 3. Computational Resources
-
-* **Step 5 (Monte Carlo simulation)** is computationally intensive. With default parameters (1000 iterations, 16 threads), expect 2-6 hours runtime.
-* Increase `monte_carlo_threads` to match available CPU cores for faster execution.
-
-### 4. Troubleshooting
+### Common Issues
 
 **Issue: "Math::CDF module not found"**
 
-* Solution: Rebuild the Singularity container ensuring Math::CDF and its dependencies are installed
+Solution: The Singularity container includes Math::CDF. Ensure you're using the correct container version.
+
+```bash
+# Verify Math::CDF is installed
+singularity exec RIC-seq.sif perl -MMath::CDF -e 'print "Math::CDF: OK\n"'
+```
 
 **Issue: Low mapping rate (<50%)**
 
-* Check adapter contamination in FastQC reports
-* Verify STAR index matches the species of your sample
+Solutions:
+- Check adapter contamination in FastQC reports
+- Verify STAR index matches the species of your sample
+- Check for high rRNA contamination
 
 **Issue: "No significant interactions found"**
 
-* Check sequencing depth (recommend >50M paired-end reads)
-* Verify `pvalue_cutoff` is not too stringent (try 0.1 for exploratory analysis)
-* Ensure biological replicates are processed together for better statistical power
+Solutions:
+- Check sequencing depth (recommend >50M paired-end reads per sample)
+- Verify `pvalue_cutoff` is not too stringent (try 0.1 for exploratory analysis)
+- Ensure biological replicates are processed for better statistical power
+- Check Monte Carlo simulation completed successfully (16 thread outputs should exist)
 
-## Reference
+**Issue: Step 3 outputs are empty**
 
-For more information about the RIC-seq method and its applications:
+Solutions:
+- Check logs in `output/logs/{sample}_step3.log`
+- Verify gene annotation BED and junction BED files are correct format
+- Ensure sufficient intra-molecular interactions from Step 2
 
-**Original Publication:**
+**Issue: Pipeline stuck or slow**
 
-* Lu Z, Zhang QC, Lee B, et al. RNA Duplex Map in Living Cells Reveals Higher-Order Transcriptome Structure.  *Cell* . 2016;165(5):1267-1279. doi:10.1016/j.cell.2016.04.028
+Solutions:
+- Check system resources (CPU, RAM, disk I/O)
+- Step 5 Monte Carlo simulation is computationally intensive (2-6 hours with default parameters)
+- Increase `monte_carlo_threads` to match available CPU cores
+- Consider reducing `monte_carlo_iters` for faster testing (min 10,000)
 
-**Original Repositories:**
+**Issue: Singularity binding errors**
 
-* https://github.com/caochch/RICpipe
+Solutions:
+- Ensure all required paths are bound using `--singularity-args "-B /path1,/path2"`
+- Paths must exist on host system
+- Use absolute paths in configuration file
+
+## Important Notes
+
+### Reference File Format Requirements
+
+- **Junction BED**: Must be in pairwise splicing site format generated by `creat_junction_bed.pl` (12 columns total)
+- **Gene Annotation BED**: Must contain Gene ID information in the 4th column (not just transcript IDs)
+- **rRNA Index**: Must be built specifically for rRNA sequences (use lower `genomeSAindexNbases` for small genomes)
+
+### Script Path Configuration
+
+The `scripts_root` parameter points to `/mnt/RICseq_scripts_root` inside the container where all Perl scripts are located. This directory structure is:
+
+```
+/mnt/RICseq_scripts_root/
+├── step0.remove_PCR_duplicates/
+├── step1.collect_pair_tags/
+├── step2.separate_intra_inter_molecular/
+├── step3.category_intra_reads/
+├── step4.cluster_intramolecular/
+└── step5.screen_high-confidence_intermolecular/
+```
+
+### Computational Resources
+
+- **Step 0-4**: Generally complete within 2-4 hours for 50M read pairs
+- **Step 5 (Monte Carlo simulation)**: Computationally intensive
+  - With default parameters (100,000 iterations, 16 threads): 2-6 hours
+  - Increase `monte_carlo_threads` to match available CPU cores for faster execution
+  - Memory usage scales with network complexity (~4-8 GB per thread)
+
+### Data Storage
+
+Intermediate files can be large:
+- SAM files: 10-50 GB per sample
+- STAR alignment: 20-100 GB per sample  
+- Total pipeline: 100-300 GB per sample (including temp files)
+
+Consider using `--delete-temp-output` flag in Snakemake to remove intermediate files.
 
 ## Citation
 
-If you use this pipeline in your research, please cite both the original RIC-seq method paper and this pipeline repository.
+If you use this pipeline in your research, please cite:
 
----
+**Original RIC-seq Method:**
 
-**Pipeline Version:** v1.0
+Lu Z, Zhang QC, Lee B, et al. RNA Duplex Map in Living Cells Reveals Higher-Order Transcriptome Structure. *Cell*. 2016;165(5):1267-1279. doi:10.1016/j.cell.2016.04.028
 
-**Last Updated:** November 2025
+**Updated Protocol:**
 
-**Maintainer:** [Your contact information]
+Cai Z, Cao C, Ji L, et al. RIC-seq for global in situ profiling of RNA-RNA spatial interactions. *Nature*. 2020;582(7812):432-437. doi:10.1038/s41586-020-2249-1
+
+**Original Repository:**
+
+https://github.com/caochch/RICpipe
