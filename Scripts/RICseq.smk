@@ -6,6 +6,8 @@ configfile: "Scripts/config.yaml"
 # Directory paths
 OUT_DIR = Path(config["outputdir"])
 QC_DIR = OUT_DIR / "qc"
+QC_RAW_DIR = QC_DIR / "raw"
+QC_FINAL_DIR = QC_DIR / "final"
 TRIM_DIR = OUT_DIR / "trim"
 DEDUP_DIR = OUT_DIR / "dedup"
 RRNA_DIR = OUT_DIR / "rRNA_filter"
@@ -31,22 +33,65 @@ rule all:
         expand(str(STEP4_DIR / "{sample}.cluster.withScore.highQuality.list"), sample=SAMPLES)
 
 # ==========================================
-# Preprocessing: Trim Galore (Trimming + QC)
+# Step 175-176: FastQC on Raw Reads
 # ==========================================
 
-rule trim_galore:
+rule fastqc_raw_reads:
     """
-    Trim adapters and low-quality bases using Trim Galore.
-    Includes FastQC analysis on raw reads.
+    Step 175-176: Quality control of raw sequencing data.
     """
     input:
         r1 = lambda wildcards: config["samples"][wildcards.sample]["R1"],
         r2 = lambda wildcards: config["samples"][wildcards.sample]["R2"]
     output:
+        html1 = QC_RAW_DIR / "{sample}_R1_fastqc.html",
+        html2 = QC_RAW_DIR / "{sample}_R2_fastqc.html",
+        zip1 = QC_RAW_DIR / "{sample}_R1_fastqc.zip",
+        zip2 = QC_RAW_DIR / "{sample}_R2_fastqc.zip"
+    container: config["sif"]
+    threads: 2
+    log: LOG_DIR / "{sample}_fastqc_raw.log"
+    shell:
+        """
+        mkdir -p {QC_RAW_DIR}
+        
+        # Run FastQC
+        fastqc -t {threads} -o {QC_RAW_DIR} {input.r1} {input.r2} > {log} 2>&1
+        
+        # Get base names from input files (remove .fastq.gz extension)
+        BASE1=$(basename {input.r1} .fastq.gz)
+        BASE2=$(basename {input.r2} .fastq.gz)
+        
+        # Rename output files to match expected names
+        echo "Renaming FastQC outputs..." >> {log}
+        echo "BASE1=$BASE1, BASE2=$BASE2" >> {log}
+        
+        mv {QC_RAW_DIR}/${{BASE1}}_fastqc.html {output.html1}
+        mv {QC_RAW_DIR}/${{BASE1}}_fastqc.zip {output.zip1}
+        mv {QC_RAW_DIR}/${{BASE2}}_fastqc.html {output.html2}
+        mv {QC_RAW_DIR}/${{BASE2}}_fastqc.zip {output.zip2}
+        
+        echo "FastQC completed successfully for {wildcards.sample}" >> {log}
+        """
+
+# ==========================================
+# Step 177: Adapter Trimming with Trim Galore
+# ==========================================
+
+rule trim_galore:
+    """
+    Step 177: Trim adapters and low-quality bases using Trim Galore.
+    """
+    input:
+        r1 = lambda wildcards: config["samples"][wildcards.sample]["R1"],
+        r2 = lambda wildcards: config["samples"][wildcards.sample]["R2"],
+        
+        qc_check = QC_RAW_DIR / "{sample}_R1_fastqc.zip"
+    output:
         r1_trim = temp(TRIM_DIR / "{sample}_R1_trimmed.fq.gz"),
         r2_trim = temp(TRIM_DIR / "{sample}_R2_trimmed.fq.gz"),
-        qc1_raw = TRIM_DIR / "{sample}_R1_fastqc.zip",
-        qc2_raw = TRIM_DIR / "{sample}_R2_fastqc.zip"
+        report1 = TRIM_DIR / "{sample}_R1_trimming_report.txt",
+        report2 = TRIM_DIR / "{sample}_R2_trimming_report.txt"
     container: config["sif"]
     threads: 8
     log: LOG_DIR / "{sample}_trim_galore.log"
@@ -54,7 +99,7 @@ rule trim_galore:
         """
         mkdir -p {TRIM_DIR}
         
-        trim_galore --paired --phred33 --stringency 3 --length 30 --fastqc \
+        trim_galore --paired --phred33 --stringency 3 --length 30 \
             --cores {threads} --gzip \
             -o {TRIM_DIR} \
             {input.r1} {input.r2} > {log} 2>&1
@@ -67,60 +112,22 @@ rule trim_galore:
         mv {TRIM_DIR}/${{BASE1}}_val_1.fq.gz {output.r1_trim}
         mv {TRIM_DIR}/${{BASE2}}_val_2.fq.gz {output.r2_trim}
         
-        # Rename FastQC files
-        mv {TRIM_DIR}/${{BASE1}}_val_1_fastqc.zip {output.qc1_raw}
-        mv {TRIM_DIR}/${{BASE2}}_val_2_fastqc.zip {output.qc2_raw}
-        mv {TRIM_DIR}/${{BASE1}}_val_1_fastqc.html {TRIM_DIR}/{wildcards.sample}_R1_fastqc.html
-        mv {TRIM_DIR}/${{BASE2}}_val_2_fastqc.html {TRIM_DIR}/{wildcards.sample}_R2_fastqc.html
+        # Save trimming reports
+        mv {TRIM_DIR}/${{BASE1}}.fastq.gz_trimming_report.txt {output.report1} 2>/dev/null || true
+        mv {TRIM_DIR}/${{BASE2}}.fastq.gz_trimming_report.txt {output.report2} 2>/dev/null || true
         """
 
-rule cutadapt_polyN:
-    """
-    Remove poly-N tails using cutadapt after initial trimming.
-    """
-    input:
-        r1 = TRIM_DIR / "{sample}_R1_trimmed.fq.gz",
-        r2 = TRIM_DIR / "{sample}_R2_trimmed.fq.gz"
-    output:
-        r1_val = TRIM_DIR / "{sample}_val_1.fq.gz",
-        r2_val = TRIM_DIR / "{sample}_val_2.fq.gz"
-    container: config["sif"]
-    threads: 4
-    log: LOG_DIR / "{sample}_cutadapt.log"
-    shell:
-        """
-        cutadapt -b A{{100}} -b C{{100}} -b G{{100}} -b T{{100}} \
-            -B A{{100}} -B C{{100}} -B G{{100}} -B T{{100}} \
-            -n 3 -e 0.1 --minimum-length 30 \
-            -o {output.r1_val} -p {output.r2_val} \
-            {input.r1} {input.r2} > {log} 2>&1
-        """
-
-rule fastqc_trimmed:
-    """
-    Run FastQC on final trimmed reads.
-    """
-    input:
-        r1 = TRIM_DIR / "{sample}_val_1.fq.gz",
-        r2 = TRIM_DIR / "{sample}_val_2.fq.gz"
-    output:
-        qc1 = QC_DIR / "{sample}_val_1_fastqc.zip",
-        qc2 = QC_DIR / "{sample}_val_2_fastqc.zip",
-        html1 = QC_DIR / "{sample}_val_1_fastqc.html",
-        html2 = QC_DIR / "{sample}_val_2_fastqc.html"
-    container: config["sif"]
-    threads: 2
-    log: LOG_DIR / "{sample}_fastqc_trimmed.log"
-    shell:
-        """
-        mkdir -p {QC_DIR}
-        fastqc -t {threads} -o {QC_DIR} {input.r1} {input.r2} > {log} 2>&1
-        """
+# ==========================================
+# Step 178: Remove PCR Duplicates
+# ==========================================
 
 rule remove_pcr_duplicates:
+    """
+    Step 178: Remove PCR duplicates.
+    """
     input:
-        r1_val = TRIM_DIR / "{sample}_val_1.fq.gz",
-        r2_val = TRIM_DIR / "{sample}_val_2.fq.gz"
+        r1_trim = TRIM_DIR / "{sample}_R1_trimmed.fq.gz",
+        r2_trim = TRIM_DIR / "{sample}_R2_trimmed.fq.gz"
     output:
         r1_dedup = DEDUP_DIR / "{sample}_read1.clean.rmDup.fq",
         r2_dedup = DEDUP_DIR / "{sample}_read2.clean.rmDup.fq",
@@ -134,8 +141,8 @@ rule remove_pcr_duplicates:
         """
         mkdir -p {params.out_dir}
         
-        gunzip -c {input.r1_val} > {params.out_dir}/{wildcards.sample}_R1.tmp.fq
-        gunzip -c {input.r2_val} > {params.out_dir}/{wildcards.sample}_R2.tmp.fq
+        gunzip -c {input.r1_trim} > {params.out_dir}/{wildcards.sample}_R1.tmp.fq
+        gunzip -c {input.r2_trim} > {params.out_dir}/{wildcards.sample}_R2.tmp.fq
         touch {params.out_dir}/{wildcards.sample}_dummy.fq
 
         perl {params.script} \
@@ -159,14 +166,84 @@ rule remove_pcr_duplicates:
         """
 
 # ==========================================
-# rRNA Filtration
+# Step 179: Trim Low-Complexity Sequences with cutadapt
 # ==========================================
 
-rule rrna_filter:
-    """Map reads to rRNA index and keep unmapped reads"""
+rule cutadapt_low_complexity:
+    """
+    Step 179: Trim low-complexity fragments from each end of reads by cutadapt.
+    """
     input:
         r1 = DEDUP_DIR / "{sample}_read1.clean.rmDup.fq",
         r2 = DEDUP_DIR / "{sample}_read2.clean.rmDup.fq"
+    output:
+        r1_clean = TRIM_DIR / "{sample}_read1.clean.rmDup.rmPoly.fq",
+        r2_clean = TRIM_DIR / "{sample}_read2.clean.rmDup.rmPoly.fq"
+    container: config["sif"]
+    threads: 4
+    log: LOG_DIR / "{sample}_cutadapt.log"
+    shell:
+        """
+        cutadapt -b A{{100}} -b C{{100}} -b G{{100}} -b T{{100}} \
+            -B A{{100}} -B C{{100}} -B G{{100}} -B T{{100}} \
+            -n 3 -e 0.1 --minimum-length 30 \
+            -o {output.r1_clean} -p {output.r2_clean} \
+            {input.r1} {input.r2} > {log} 2>&1
+        """
+
+# ==========================================
+# Final FastQC (Optional but Recommended)
+# ==========================================
+
+rule fastqc_final:
+    """
+    Optional: Run FastQC on final processed reads before mapping.
+    """
+    input:
+        r1 = TRIM_DIR / "{sample}_read1.clean.rmDup.rmPoly.fq",
+        r2 = TRIM_DIR / "{sample}_read2.clean.rmDup.rmPoly.fq"
+    output:
+        html1 = QC_FINAL_DIR / "{sample}_read1_fastqc.html",
+        html2 = QC_FINAL_DIR / "{sample}_read2_fastqc.html",
+        zip1 = QC_FINAL_DIR / "{sample}_read1_fastqc.zip",
+        zip2 = QC_FINAL_DIR / "{sample}_read2_fastqc.zip"
+    container: config["sif"]
+    threads: 2
+    log: LOG_DIR / "{sample}_fastqc_final.log"
+    shell:
+        """
+        mkdir -p {QC_FINAL_DIR}
+        
+        # Run FastQC
+        fastqc -t {threads} -o {QC_FINAL_DIR} {input.r1} {input.r2} > {log} 2>&1
+        
+        # Get base names (remove .fq extension)
+        BASE1=$(basename {input.r1} .fq)
+        BASE2=$(basename {input.r2} .fq)
+        
+        echo "Renaming final FastQC outputs..." >> {log}
+        echo "BASE1=$BASE1, BASE2=$BASE2" >> {log}
+        
+        # Rename to standardized names
+        mv {QC_FINAL_DIR}/${{BASE1}}_fastqc.html {output.html1}
+        mv {QC_FINAL_DIR}/${{BASE1}}_fastqc.zip {output.zip1}
+        mv {QC_FINAL_DIR}/${{BASE2}}_fastqc.html {output.html2}
+        mv {QC_FINAL_DIR}/${{BASE2}}_fastqc.zip {output.zip2}
+        
+        echo "Final FastQC completed successfully for {wildcards.sample}" >> {log}
+        """
+
+# ==========================================
+# Step 180: rRNA Filtration
+# ==========================================
+
+rule rrna_filter:
+    """
+    Step 180: Map reads to rRNA index and keep unmapped reads.
+    """
+    input:
+        r1 = TRIM_DIR / "{sample}_read1.clean.rmDup.rmPoly.fq",
+        r2 = TRIM_DIR / "{sample}_read2.clean.rmDup.rmPoly.fq"
     output:
         r1_clean = RRNA_DIR / "{sample}.no_rRNA.1.fq",
         r2_clean = RRNA_DIR / "{sample}.no_rRNA.2.fq",
@@ -187,16 +264,17 @@ rule rrna_filter:
              --outReadsUnmapped Fastx \
              --outSAMmode None \
              > {log} 2>&1
-
+        
         mv {params.prefix}Unmapped.out.mate1 {output.r1_clean}
         mv {params.prefix}Unmapped.out.mate2 {output.r2_clean}
         """
 
 # ==========================================
-# Genome Alignment (Step 1)
+# Step 181: Genome Alignment
 # ==========================================
 
 rule star_align_r1:
+    """Step 181: Align read1 to reference genome"""
     input: RRNA_DIR / "{sample}.no_rRNA.1.fq"
     output:
         sam = ALIGN_DIR / "{sample}.read1.Aligned.out.sam",
@@ -228,6 +306,7 @@ rule star_align_r1:
         """
 
 rule star_align_r2:
+    """Step 181: Align read2 to reference genome"""
     input: RRNA_DIR / "{sample}.no_rRNA.2.fq"
     output:
         sam = ALIGN_DIR / "{sample}.read2.Aligned.out.sam",
@@ -257,7 +336,12 @@ rule star_align_r2:
              > {log} 2>&1
         """
 
+# ==========================================
+# Step 182: Collect Pair Tags
+# ==========================================
+
 rule step1_collect_pairs:
+    """Step 182: Collect pairwise tags from the same paired-end read"""
     input:
         sam1 = ALIGN_DIR / "{sample}.read1.Aligned.out.sam",
         sam2 = ALIGN_DIR / "{sample}.read2.Aligned.out.sam",
@@ -305,10 +389,11 @@ rule step1_collect_pairs:
         """
 
 # ==========================================
-# Step 2: Separate Intra/Inter
+# Step 183: Separate Intra/Inter
 # ==========================================
 
 rule sam_to_bed:
+    """Step 183: Convert SAM to BED format"""
     input: STEP1_DIR / "{sample}.interaction.sam"
     output:
         bed1 = temp(STEP2_DIR / "{sample}.read_1.bed"),
@@ -330,6 +415,7 @@ rule sam_to_bed:
         """
 
 rule intersect_genes:
+    """Step 183: Intersect reads with gene annotations"""
     input:
         bed1 = STEP2_DIR / "{sample}.read_1.bed",
         bed2 = STEP2_DIR / "{sample}.read_2.bed",
@@ -346,6 +432,7 @@ rule intersect_genes:
         """
 
 rule find_intra_candidates:
+    """Step 183: Find intramolecular interaction candidates"""
     input:
         ov1 = STEP2_DIR / "{sample}.gene_overlap_with_read1.bed",
         ov2 = STEP2_DIR / "{sample}.gene_overlap_with_read2.bed"
@@ -358,6 +445,7 @@ rule find_intra_candidates:
         "perl {params.script} {input.ov1} {input.ov2} > {output} 2> {log}"
 
 rule separate_files:
+    """Step 183: Separate intra- and inter-molecular interactions"""
     input:
         sam = STEP1_DIR / "{sample}.interaction.sam",
         list_file = STEP2_DIR / "{sample}.pets_in_same_gene.list"
@@ -381,10 +469,11 @@ rule separate_files:
         """
 
 # ==========================================
-# Step 3: Categorize Intra-molecular
+# Step 184: Categorize Intra-molecular
 # ==========================================
 
 rule step3_category:
+    """Step 184: Categorize intramolecular pairwise tags"""
     input:
         intra_sam = STEP2_DIR / "{sample}.intraMolecular.sam",
         gene_bed = config["gene_annotation_bed"],
@@ -403,7 +492,6 @@ rule step3_category:
         mkdir -p {params.work_dir}
         cd {params.work_dir}
         
-        # Copy input to working directory
         cp {input.intra_sam} .
         BASENAME=$(basename {input.intra_sam})
         
@@ -411,7 +499,6 @@ rule step3_category:
         echo "Working directory: $(pwd)" >> {log} 2>&1
         echo "Input file: $BASENAME" >> {log} 2>&1
         
-        # Run the perl script
         perl {params.script} \
             $BASENAME \
             {params.frag_cutoff} \
@@ -421,46 +508,31 @@ rule step3_category:
         echo "=== Script completed, checking outputs ===" >> {log} 2>&1
         ls -lh *.sam >> {log} 2>&1
         
-        # Check for output files with various possible naming patterns
         if [ -f "${{BASENAME%.sam}}.Chimeric.sam" ]; then
             mv "${{BASENAME%.sam}}.Chimeric.sam" {output.chim}
-            echo "Moved ${{BASENAME%.sam}}.Chimeric.sam to {output.chim}" >> {log} 2>&1
         elif [ -f "{wildcards.sample}.intraMolecular.Chimeric.sam" ]; then
             mv "{wildcards.sample}.intraMolecular.Chimeric.sam" {output.chim}
-            echo "Moved {wildcards.sample}.intraMolecular.Chimeric.sam to {output.chim}" >> {log} 2>&1
         else
-            echo "ERROR: Chimeric.sam not found. Available files:" >> {log} 2>&1
-            ls -lh >> {log} 2>&1
-            # Create empty file to avoid failure
             touch {output.chim}
-            echo "WARNING: Created empty Chimeric.sam file" >> {log} 2>&1
         fi
         
         if [ -f "${{BASENAME%.sam}}.Singleton.sam" ]; then
             mv "${{BASENAME%.sam}}.Singleton.sam" {output.sing}
-            echo "Moved ${{BASENAME%.sam}}.Singleton.sam to {output.sing}" >> {log} 2>&1
         elif [ -f "{wildcards.sample}.intraMolecular.Singleton.sam" ]; then
             mv "{wildcards.sample}.intraMolecular.Singleton.sam" {output.sing}
-            echo "Moved {wildcards.sample}.intraMolecular.Singleton.sam to {output.sing}" >> {log} 2>&1
         else
-            echo "ERROR: Singleton.sam not found. Available files:" >> {log} 2>&1
-            ls -lh >> {log} 2>&1
-            # Create empty file to avoid failure
             touch {output.sing}
-            echo "WARNING: Created empty Singleton.sam file" >> {log} 2>&1
         fi
         
-        # Cleanup
         rm -f $BASENAME
-        
-        echo "=== Step3 completed ===" >> {log} 2>&1
         """
 
 # ==========================================
-# Step 4: Cluster Intramolecular
+# Step 185: Cluster Intramolecular
 # ==========================================
 
 rule cluster_intramolecular:
+    """Step 185: Cluster intramolecular chimeric reads"""
     input:
         intra_chim_sam = STEP3_DIR / "{sample}.intraMolecular.Chimeric.sam"
     output:
@@ -487,10 +559,11 @@ rule cluster_intramolecular:
         """
 
 # ==========================================
-# Step 5: Intermolecular Network
+# Step 186: Intermolecular Network (Monte Carlo)
 # ==========================================
 
 rule step5_prepare:
+    """Step 186: Prepare intermolecular interaction network"""
     input:
         inter_sam = STEP2_DIR / "{sample}.interMolecular.sam",
         gene_bed = config["gene_annotation_bed"]
@@ -524,6 +597,7 @@ rule step5_prepare:
         """
 
 rule step5_sim_observed:
+    """Step 186: Monte Carlo simulation based on observed data"""
     input:
         network = STEP5_DIR / "{sample}.merged.network",
         marker = STEP5_DIR / "{sample}.dirs_prepared"
@@ -549,6 +623,7 @@ rule step5_sim_observed:
         """
 
 rule step5_sim_random:
+    """Step 186: Monte Carlo simulation based on random data"""
     input:
         network = STEP5_DIR / "{sample}.merged.network",
         marker = STEP5_DIR / "{sample}.dirs_prepared"
@@ -577,6 +652,7 @@ rule step5_sim_random:
         """
 
 rule step5_post_process:
+    """Step 186: Post-process Monte Carlo results and calculate p-values"""
     input:
         obs_res = expand(STEP5_DIR / "{{sample}}_sim/1.base_on_observed/result1.thread{tid}.simulation.list", tid=THREADS),
         rnd_res = expand(STEP5_DIR / "{{sample}}_sim/2.base_on_random/result1.thread{tid}.simulation_on_random.list", tid=THREADS)
@@ -593,7 +669,7 @@ rule step5_post_process:
         script_filt = f"{SCRIPTS}/step5.screen_high-confidence_intermolecular/scripts/5.recalibrate_pvalue/5.filter_interaction.pl",
         pval_cutoff = config["pvalue_cutoff"],
         threads_list = " ".join([str(t) for t in THREADS]),
-        step5_dir = STEP5_DIR  # 添加这个参数
+        step5_dir = STEP5_DIR
     threads: 16
     log: LOG_DIR / "{sample}_step5_post.log"
     shell:
@@ -665,7 +741,6 @@ rule step5_post_process:
 
         perl {params.script_repl} comparison.observed_to_simulated.basedOnObserved.finalMerge.xls result1.results_file.for_Test.list.window_500.qval.txt > result2.comparison.observed_to_simulated.Add_Local_Corrected_pvalue.list
         
-        # 修复：使用绝对路径
         perl {params.script_filt} result2.comparison.observed_to_simulated.Add_Local_Corrected_pvalue.list {params.pval_cutoff} > {output.final_list}
         """
 
@@ -675,12 +750,14 @@ rule step5_post_process:
 
 rule multiqc:
     input:
-        # Raw FastQC from trim_galore
-        expand(str(TRIM_DIR / "{sample}_R1_fastqc.zip"), sample=SAMPLES),
-        expand(str(TRIM_DIR / "{sample}_R2_fastqc.zip"), sample=SAMPLES),
-        # Trimmed FastQC
-        expand(str(QC_DIR / "{sample}_val_1_fastqc.zip"), sample=SAMPLES),
-        expand(str(QC_DIR / "{sample}_val_2_fastqc.zip"), sample=SAMPLES),
+        # Raw FastQC
+        expand(str(QC_RAW_DIR / "{sample}_R1_fastqc.zip"), sample=SAMPLES),
+        expand(str(QC_RAW_DIR / "{sample}_R2_fastqc.zip"), sample=SAMPLES),
+        # Final FastQC
+        expand(str(QC_FINAL_DIR / "{sample}_read1_fastqc.zip"), sample=SAMPLES),
+        expand(str(QC_FINAL_DIR / "{sample}_read2_fastqc.zip"), sample=SAMPLES),
+        # Trimming reports
+        expand(str(TRIM_DIR / "{sample}_R1_trimming_report.txt"), sample=SAMPLES),
         # Dedup stats
         expand(str(DEDUP_DIR / "{sample}_dedup_stats.txt"), sample=SAMPLES),
         # rRNA filter logs
@@ -690,7 +767,7 @@ rule multiqc:
         expand(str(ALIGN_DIR / "{sample}.read2.Log.final.out"), sample=SAMPLES),
         # Step1 stats
         expand(str(STEP1_DIR / "{sample}_num_of_interactions.list"), sample=SAMPLES),
-        # Final outputs to ensure pipeline completion
+        # Final outputs
         expand(str(STEP5_DIR / "{sample}.significant.interMolecular.interaction.list"), sample=SAMPLES)
     output:
         report = MULTIQC_DIR / "multiqc_report.html",
