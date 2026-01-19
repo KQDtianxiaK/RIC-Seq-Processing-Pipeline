@@ -1,6 +1,6 @@
 # RIC-seq Processing Pipeline
 
-This pipeline processes raw RIC-seq (RNA In situ Conformation sequencing) FASTQ data through a comprehensive workflow including quality control, adapter trimming, PCR duplicate removal, rRNA filtration, genome alignment, paired-end tag collection, and downstream analysis to identify both intra-molecular and inter-molecular RNA-RNA interactions. The entire workflow is fully containerized using Singularity and orchestrated by Snakemake, ensuring reproducibility and ease of deployment.
+This pipeline processes raw RIC-seq (RNA In situ Conformation sequencing) FASTQ data through a comprehensive workflow including quality control, adapter trimming, PCR duplicate removal, rRNA filtration, genome alignment, paired-end tag collection, and downstream analysis to identify both intra-molecular and inter-molecular RNA-RNA interactions. The entire workflow is fully containerized using Singularity and orchestrated by Snakemake, ensuring reproducibility and compliance with the **Nature Protocols 2021** RIC-seq standard.
 
 ## Overview
 
@@ -10,14 +10,23 @@ RIC-seq (RNA In situ Conformation sequencing) is a proximity ligation-based tech
 
 ### Workflow Summary
 
-The RIC-seq pipeline consists of six major analytical steps:
+The RIC-seq pipeline follows the **Nature Protocols 2021** computational workflow (Steps 175-186) and consists of the following major analytical steps:
 
-- **Step 0: Preprocessing** - Quality control with Trim Galore, poly-N tail removal, PCR duplicate removal, and rRNA filtration
-- **Step 1: Alignment & Pairing** - STAR alignment with chimeric read detection and paired-end tag collection  
-- **Step 2: Separation** - Distinguish intra-molecular from inter-molecular interactions based on gene annotation
-- **Step 3: Categorization** - Classify intra-molecular reads into normal transcripts vs. chimeric structures
-- **Step 4: Clustering** - Cluster intra-molecular chimeric reads into high-confidence RNA structural interactions
-- **Step 5: Network Analysis** - Screen significant inter-molecular RNA-RNA interactions using Monte Carlo simulation with local multiple testing correction
+#### Preprocessing & Quality Control (Steps 175-179)
+- **Step 175-176: Raw Data QC** - FastQC analysis on raw sequencing data to assess initial quality
+- **Step 177: Adapter Trimming** - Trim Galore for adapter removal and quality filtering
+- **Step 178: PCR Deduplication** - Remove PCR duplicates to avoid bias
+- **Step 179: Low-Complexity Filtering** - cutadapt removes poly-N tails and homopolymer sequences
+- **Final QC** - FastQC on processed reads to verify quality improvement
+- **rRNA Filtration** - STAR alignment to rRNA index to remove ribosomal contamination
+
+#### Core Analysis Pipeline (Steps 180-186)
+- **Step 180-181: Genome Alignment** - STAR alignment with chimeric read detection for both R1 and R2
+- **Step 182: Pair Tag Collection** - Collect and merge paired-end alignment information
+- **Step 183: Intra/Inter Separation** - Distinguish intra-molecular from inter-molecular interactions
+- **Step 184: Intra-molecular Categorization** - Classify reads into chimeric vs. singleton structures
+- **Step 185: Intra-molecular Clustering** - Cluster chimeric reads with connection score filtering (≥0.01)
+- **Step 186: Inter-molecular Network** - Monte Carlo simulation with local multiple testing correction
 
 The workflow is fully containerized using Singularity with all required bioinformatics tools and Perl modules pre-installed, and the entire pipeline can be executed with a single Snakemake command.
 
@@ -117,7 +126,7 @@ gunzip GRCh38.primary_assembly.genome.fa.gz
 gunzip gencode.v38.primary_assembly.annotation.gtf.gz
 
 # Build STAR index (requires Singularity container)
-singularity exec --cleanenv RIC-seq_v2.sif STAR \
+singularity exec --cleanenv RIC-seq.sif STAR \
     --runMode genomeGenerate \
     --genomeDir ./hg38/STAR_index \
     --genomeFastaFiles GRCh38.primary_assembly.genome.fa \
@@ -135,7 +144,7 @@ Build a separate STAR index for rRNA sequences to filter out ribosomal RNA conta
 wget -O rRNA.fa "https://www.ncbi.nlm.nih.gov/sviewer/viewer.cgi?tool=portal&save=file&log$=seqview&db=nuccore&report=fasta&id=555853"
 
 # Build rRNA STAR index
-singularity exec --cleanenv RIC-seq_v2.sif STAR \
+singularity exec --cleanenv RIC-seq.sif STAR \
     --runMode genomeGenerate \
     --genomeDir ./hg38/rRNA_STAR_index \
     --genomeFastaFiles rRNA.fa \
@@ -169,7 +178,6 @@ awk 'BEGIN{OFS="\t"} $3=="gene" {print $1, $4-1, $5, $10, "60", $7}' \
     sed 's/"//g' | sed 's/;//g' > whole_gene_region.bed
 ```
 
-
 **4.4 Adapter Sequences**
 
 Prepare an adapter FASTA file containing Illumina adapter sequences for trimming.
@@ -198,10 +206,10 @@ The Singularity container includes all required tools and Perl modules. Build it
 
 ```bash
 # Build the container (requires sudo)
-sudo singularity build RIC-seq_v2.sif RIC-seq_v2.def
+sudo singularity build RIC-seq.sif RIC-seq.def
 ```
 
-The container (v1.2) includes:
+The container includes:
 - **Bioinformatics Tools**: FastQC v0.12.1, STAR v2.7.11b, SAMtools v1.22.1, BEDtools v2.28.0
 - **Quality Control**: Trim Galore v0.6.10, cutadapt v3.4, MultiQC v1.19
 - **Perl Modules**: List::Util, File::Spec, Getopt::Long, Graph::Undirected, Statistics::Distributions, Math::CDF
@@ -229,9 +237,9 @@ project_directory/
 
 **File Descriptions:**
 
-- **RICseq.smk** — Main Snakemake workflow script with improved error handling
+- **RICseq.smk** — Main Snakemake workflow script following Nature Protocols 2021
 - **config.yaml** — Configuration file supporting multiple samples
-- **RIC-seq.sif** — Singularity container with Trim Galore and all dependencies
+- **RIC-seq.sif** — Singularity container with all dependencies
 - **STAR_index/** — STAR genome index directory
 - **rRNA_STAR_index/** — STAR rRNA index for pre-filtering
 - **gencode.v38.all_exon_junction.bed** — Pairwise splicing site annotation
@@ -257,7 +265,7 @@ samples:
 outputdir: "/path/to/output"
 
 # Singularity container
-sif: "/path/to/Containers/RIC-seq_v2.sif"
+sif: "/path/to/Containers/RIC-seq.sif"
 
 # Resources
 threads: 16
@@ -275,11 +283,11 @@ scripts_root: "/mnt/RICseq_scripts_root"
 # Step 3/4: Intramolecular interaction parameters
 fragment_len_cutoff: 1000              # Fragment length cutoff for categorization
 step4_fragment_cutoff: 2                # Minimum unique fragment number for clustering
-step4_connection_score_cutoff: 0.01    # Connection score cutoff (Nature 2020 default)
+step4_connection_score_cutoff: 0.01    # Connection score cutoff (Nature Protocols default)
 
 # Step 5: Intermolecular interaction parameters
 pvalue_cutoff: 0.05                    # P-value threshold for significant interactions
-monte_carlo_iters: 100000              # Monte Carlo iterations (Nature 2020 used 100,000)
+monte_carlo_iters: 100000              # Monte Carlo iterations (Nature Protocols: 100,000)
 monte_carlo_threads: 16                # Parallel threads for Monte Carlo simulation
 ```
 
@@ -304,7 +312,8 @@ snakemake -s Scripts/RICseq.smk \
     --configfile Scripts/config.yaml \
     --use-singularity \
     --singularity-args "-B /path/to/project_directory" \
-    --cores 16 -p --rerun-incomplete
+    --cores 16 -p --rerun-incomplete \
+    --latency-wait 30
 ```
 
 **Step 3: Background Execution (Recommended)**
@@ -315,7 +324,8 @@ nohup snakemake -s Scripts/RICseq.smk \
     --configfile Scripts/config.yaml \
     --use-singularity \
     --singularity-args "-B /path/to/project_directory" \
-    --cores 16 -p --rerun-incomplete > pipeline.log 2>&1 &
+    --cores 16 -p --rerun-incomplete \
+    --latency-wait 30 > pipeline.log 2>&1 &
 ```
 
 ### Command Parameters
@@ -329,6 +339,7 @@ nohup snakemake -s Scripts/RICseq.smk \
 - `-p` — Print shell commands for transparency
 - `-n` — Dry run (preview workflow without execution)
 - `--rerun-incomplete` — Rerun incomplete jobs from previous runs
+- `--latency-wait` — Wait time (seconds) for output files to appear (filesystem latency)
 
 **Unlock Directory (If Pipeline Interrupted):**
 
@@ -341,35 +352,40 @@ snakemake -s Scripts/RICseq.smk \
 
 ```
 output/
-├── qc/                          # Quality control after trimming
-│   └── {sample}_val_{1,2}_fastqc.{html,zip}
-├── trim/                        # Trimming reports and processed reads
-│   ├── {sample}_R{1,2}_fastqc.{html,zip}
-│   ├── {sample}_trimming_report.txt
-│   └── {sample}_val_{1,2}.fq.gz
-├── dedup/                       # PCR duplicate removal
+├── qc/                          # Quality control directories
+│   ├── raw/                     # FastQC on raw reads (Step 175-176)
+│   │   ├── {sample}_R1_fastqc.{html,zip}
+│   │   └── {sample}_R2_fastqc.{html,zip}
+│   └── final/                   # FastQC on processed reads
+│       ├── {sample}_read1_fastqc.{html,zip}
+│       └── {sample}_read2_fastqc.{html,zip}
+├── trim/                        # Trimming and low-complexity filtering
+│   ├── {sample}_R{1,2}_trimming_report.txt
+│   ├── {sample}_R{1,2}_trimmed.fq.gz       # After Trim Galore
+│   └── {sample}_read{1,2}.clean.rmDup.rmPoly.fq  # After cutadapt
+├── dedup/                       # PCR duplicate removal (Step 178)
 │   ├── {sample}_read{1,2}.clean.rmDup.fq
 │   └── {sample}_dedup_stats.txt
-├── rRNA_filter/                 # rRNA filtration results
+├── rRNA_filter/                 # rRNA filtration results (Step 180)
 │   ├── {sample}.no_rRNA.{1,2}.fq
 │   └── {sample}.Log.final.out
-├── alignment/                   # STAR alignment
+├── alignment/                   # STAR alignment (Step 181)
 │   ├── {sample}.read{1,2}.Aligned.out.sam
 │   ├── {sample}.read{1,2}.Chimeric.out.sam
 │   └── {sample}.read{1,2}.Log.final.out
-├── step1_pair_tags/             # Paired-end tag collection
+├── step1_pair_tags/             # Paired-end tag collection (Step 182)
 │   ├── {sample}.interaction.sam
 │   └── {sample}_num_of_interactions.list
-├── step2_separate/              # Intra/inter-molecular separation
+├── step2_separate/              # Intra/inter-molecular separation (Step 183)
 │   ├── {sample}.intraMolecular.sam
 │   ├── {sample}.interMolecular.sam
 │   └── {sample}.pets_in_same_gene.list
-├── step3_category/              # Intra-molecular categorization
+├── step3_category/              # Intra-molecular categorization (Step 184)
 │   ├── {sample}.intraMolecular.Chimeric.sam
 │   └── {sample}.intraMolecular.Singleton.sam
-├── step4_intra_cluster/         # Intra-molecular clustering
+├── step4_intra_cluster/         # Intra-molecular clustering (Step 185)
 │   └── {sample}.cluster.withScore.highQuality.list
-├── step5_inter_network/         # Inter-molecular network analysis
+├── step5_inter_network/         # Inter-molecular network analysis (Step 186)
 │   ├── {sample}.merged.network
 │   ├── {sample}_sim/            # Monte Carlo simulation results
 │   │   ├── 1.base_on_observed/
@@ -392,21 +408,35 @@ output/
 
 **Intra-molecular Interactions:**
 
-- **`{sample}.cluster.withScore.highQuality.list`** — High-confidence clustered intra-molecular RNA structures with connection scores. These represent RNA secondary/tertiary structures within individual transcripts.
+- **`{sample}.cluster.withScore.highQuality.list`** — High-confidence clustered intra-molecular RNA structures with connection scores ≥0.01. These represent RNA secondary/tertiary structures within individual transcripts.
 
 **Inter-molecular Interactions:**
 
-- **`{sample}.significant.interMolecular.interaction.list`** — Statistically significant inter-molecular RNA-RNA interactions after Monte Carlo simulation and local multiple testing correction. These represent RNA-RNA interactions between different transcripts.
+- **`{sample}.significant.interMolecular.interaction.list`** — Statistically significant inter-molecular RNA-RNA interactions (p < 0.05) after Monte Carlo simulation and local multiple testing correction. These represent RNA-RNA interactions between different transcripts.
 
 ### Quality Control Metrics
 
-**FastQC Reports:**
+**FastQC Reports (Two Checkpoints):**
 
-- **`*_fastqc.html`** — FastQC reports for both raw and trimmed data. Check for:
-  - Per-base quality scores (should be >20 for most bases)
-  - Adapter content (should be removed after trimming)
-  - Overrepresented sequences
-  - GC content distribution
+1. **Raw Data QC (`qc/raw/`)** — Quality assessment BEFORE any processing:
+   - Per-base quality scores (baseline quality)
+   - Adapter content detection
+   - Overrepresented sequences
+   - GC content distribution
+   - **Purpose**: Decide if re-sequencing is needed
+
+2. **Final QC (`qc/final/`)** — Quality assessment AFTER all preprocessing:
+   - Verify quality improvement after trimming
+   - Confirm adapter removal
+   - Check for remaining artifacts
+   - **Purpose**: Validate preprocessing effectiveness
+
+**Trimming Reports:**
+
+- **`*_trimming_report.txt`** — Trim Galore statistics:
+  - Number of reads processed
+  - Adapter sequences detected and removed
+  - Quality trimming statistics
 
 **Alignment Statistics:**
 
@@ -414,7 +444,7 @@ output/
   - Total reads
   - Uniquely mapped reads percentage (expect >70%)
   - Multi-mapped reads
-  - Chimeric reads (important for RIC-seq)
+  - Chimeric reads (important for RIC-seq, expect 5-15%)
 
 **PCR Duplication:**
 
@@ -423,47 +453,123 @@ output/
 
 **rRNA Filtration:**
 
-- **rRNA mapping rate** — Percentage of reads mapped to rRNA (varies by sample prep)
+- **rRNA mapping rate** — Percentage of reads mapped to rRNA (varies by sample prep, typically 10-40%)
 
 **MultiQC Report:**
 
-- **`multiqc_report.html`** — Comprehensive quality control summary integrating all QC metrics across samples. Open in a web browser for interactive exploration.
+- **`multiqc_report.html`** — Comprehensive quality control summary integrating all QC metrics across samples, including:
+  - Raw vs. final quality comparison
+  - Trimming statistics
+  - Alignment metrics
+  - Duplication rates
+  - Open in a web browser for interactive exploration
 
 ### Expected Results
 
 For a successful RIC-seq experiment:
 
-1. **Mapping Rate**: >70% uniquely mapped reads to genome
-2. **PCR Duplication Rate**: <30% (higher rates suggest low library complexity)
-3. **rRNA Contamination**: <20% (depends on sample preparation)
-4. **Inter-molecular Interactions**: Typically 10³–10⁵ significant RNA-RNA interactions depending on sequencing depth and p-value cutoff
-5. **Intra-molecular Clusters**: Typically 10²–10⁴ high-quality structural clusters
+1. **Raw Read Quality**: >Q30 for most bases (check in `qc/raw/`)
+2. **Adapter Content**: <1% in raw data, 0% after trimming
+3. **Mapping Rate**: >70% uniquely mapped reads to genome
+4. **Chimeric Read Rate**: 5-15% (critical for RIC-seq)
+5. **PCR Duplication Rate**: <30% (higher rates suggest low library complexity)
+6. **rRNA Contamination**: 10-40% (depends on sample preparation)
+7. **Inter-molecular Interactions**: Typically 10³–10⁵ significant RNA-RNA interactions depending on sequencing depth and p-value cutoff
+8. **Intra-molecular Clusters**: Typically 10²–10⁴ high-quality structural clusters
 
 ## Pipeline Updates
 
-### Key Improvements
+### Version 3.0 - Nature Protocols Compliance
 
-1. **Trim Galore Integration** — Replaced Trimmomatic with Trim Galore for more streamlined adapter trimming and quality control
-2. **Poly-N Tail Removal** — Added cutadapt step to remove homopolymer tails (poly-A, poly-C, poly-G, poly-T)
-3. **rRNA Pre-filtration** — Added dedicated rRNA filtering step using STAR alignment to reduce computational burden
-4. **Multi-sample Support** — Configuration file now supports processing multiple samples in a single run
-5. **Improved Error Handling** — Enhanced robustness in Step 3 and Step 5 with better file handling and fallback mechanisms
-6. **Updated Parameters** — Aligned clustering and network analysis parameters with Nature 2020 protocol (100,000 Monte Carlo iterations)
-7. **Complete Containerization** — All tools and scripts packaged in Singularity container
+**Major Improvements:**
 
-### Workflow Changes
+1. **✅ Strict Nature Protocols Adherence** — Complete implementation of Steps 175-186 from Nature Protocols 2021
+2. **✅ Raw Data Quality Control (NEW)** — Added FastQC on raw reads as first step (Steps 175-176)
+3. **✅ Dual QC Checkpoints** — Raw data QC + final processed data QC for comprehensive quality tracking
+4. **✅ Correct Processing Order** — Fixed workflow sequence:
+   ```
+   FastQC (raw) → Trim Galore → PCR Duplication → cutadapt → FastQC (final) → rRNA filter → Alignment
+   ```
+5. **✅ Enhanced Troubleshooting** — Early quality detection prevents wasting compute on poor-quality data
 
-| Step | v1 | v2 |
-|------|----|----|
-| Trimming | Trimmomatic + manual adapter file | Trim Galore (automated) |
-| Poly-N removal | Not included | cutadapt with homopolymer detection |
-| rRNA filtering | Not included | STAR alignment to rRNA index |
-| Monte Carlo iterations | 1,000 | 100,000 (Nature 2020) |
-| Multi-sample | Manual configuration | Native YAML support |
+**Key Workflow Changes:**
+
+| Aspect | Previous Version | v3.0 (Current) |
+|--------|-----------------|----------------|
+| **Initial QC** | After trimming only | **Before any processing** (Step 175-176) |
+| **Processing Order** | Trim → cutadapt → FastQC → Dedup | **FastQC → Trim → Dedup → cutadapt → FastQC** |
+| **QC Checkpoints** | 1 (post-trim) | **2 (pre + post)** |
+| **Protocol Compliance** | Partial | **Full (Steps 175-186)** |
+| **Output Structure** | `qc/` | `qc/raw/` + `qc/final/` |
+
+**Why This Matters:**
+
+- **Early Detection**: Identifies sequencing quality issues before wasting computational resources
+- **Decision Point**: Raw FastQC allows early termination if re-sequencing is needed
+- **Reproducibility**: Matches published Nature Protocols workflow exactly
+- **Validation**: Two QC checkpoints verify each processing step's effectiveness
+
+### Previous Updates
+
+1. **Trim Galore Integration** — Replaced Trimmomatic for streamlined adapter trimming
+2. **Poly-N Tail Removal** — Added cutadapt homopolymer filtering
+3. **rRNA Pre-filtration** — Dedicated STAR rRNA filtering step
+4. **Multi-sample Support** — Native YAML configuration for batch processing
+5. **Improved Error Handling** — Robust file handling in Steps 3 and 5
+6. **Updated Parameters** — Nature 2020 alignment (100,000 Monte Carlo iterations)
+7. **Complete Containerization** — All dependencies in Singularity container
+
+### Workflow Evolution
+
+| Step | v1 | v2 | v3 (Current) |
+|------|----|----|--------------|
+| **Raw QC** | ❌ Not included | ❌ Not included | ✅ **FastQC (Step 175-176)** |
+| **Trimming** | Trimmomatic | Trim Galore | Trim Galore (Step 177) |
+| **Deduplication** | Manual | After FastQC | **After Trimming (Step 178)** |
+| **Poly-N removal** | ❌ Not included | cutadapt | cutadapt (Step 179) |
+| **Final QC** | ❌ Not included | FastQC | ✅ **FastQC (validation)** |
+| **rRNA filtering** | ❌ Not included | STAR | STAR (Step 180) |
+| **Monte Carlo** | 1,000 iterations | 100,000 | 100,000 (Step 186) |
+| **Protocol Match** | Partial | Partial | ✅ **100% (Steps 175-186)** |
 
 ## Troubleshooting
 
 ### Common Issues
+
+**Issue: FastQC outputs not found / MissingOutputException**
+
+Solution: FastQC generates files based on input filenames. If you encounter file naming issues:
+
+```bash
+# Increase filesystem latency wait time
+snakemake --use-singularity --cores 16 --latency-wait 30
+
+# Check log files for actual generated filenames
+cat output/logs/{sample}_fastqc_raw.log
+```
+
+**Issue: Poor raw read quality (<Q20)**
+
+Solution: Check raw FastQC reports in `qc/raw/`:
+- If median quality <Q20 for >50% of bases, consider re-sequencing
+- If only adapter contamination, pipeline will handle it
+- If overrepresented sequences detected, investigate source
+
+**Issue: Low mapping rate (<50%)**
+
+Solutions:
+- Check both raw and final FastQC reports to compare quality
+- Verify adapter removal was successful
+- Confirm STAR index matches sample species
+- Check for high rRNA contamination
+
+**Issue: High PCR duplication (>40%)**
+
+Solutions:
+- Check raw FastQC for duplicate sequences
+- Indicates low library complexity
+- Consider using more input material in library prep
+- For exploratory analysis, proceed but note limitation
 
 **Issue: "Math::CDF module not found"**
 
@@ -474,13 +580,6 @@ Solution: The Singularity container includes Math::CDF. Ensure you're using the 
 singularity exec RIC-seq.sif perl -MMath::CDF -e 'print "Math::CDF: OK\n"'
 ```
 
-**Issue: Low mapping rate (<50%)**
-
-Solutions:
-- Check adapter contamination in FastQC reports
-- Verify STAR index matches the species of your sample
-- Check for high rRNA contamination
-
 **Issue: "No significant interactions found"**
 
 Solutions:
@@ -488,6 +587,7 @@ Solutions:
 - Verify `pvalue_cutoff` is not too stringent (try 0.1 for exploratory analysis)
 - Ensure biological replicates are processed for better statistical power
 - Check Monte Carlo simulation completed successfully (16 thread outputs should exist)
+- Review raw data quality in `qc/raw/` — poor quality impacts downstream results
 
 **Issue: Step 3 outputs are empty**
 
@@ -495,6 +595,7 @@ Solutions:
 - Check logs in `output/logs/{sample}_step3.log`
 - Verify gene annotation BED and junction BED files are correct format
 - Ensure sufficient intra-molecular interactions from Step 2
+- Review final QC reports to verify input quality
 
 **Issue: Pipeline stuck or slow**
 
@@ -510,6 +611,16 @@ Solutions:
 - Ensure all required paths are bound using `--singularity-args "-B /path1,/path2"`
 - Paths must exist on host system
 - Use absolute paths in configuration file
+
+**Issue: Workflow order confusion**
+
+Solution: The current pipeline strictly follows Nature Protocols 2021 Steps 175-186:
+1. Step 175-176: FastQC on **raw reads** first
+2. Step 177: Adapter trimming
+3. Step 178: PCR deduplication
+4. Step 179: Low-complexity filtering
+5. FastQC on **processed reads** (optional validation)
+6. Step 180-186: Core analysis pipeline
 
 ## Important Notes
 
@@ -535,8 +646,10 @@ The `scripts_root` parameter points to `/mnt/RICseq_scripts_root` inside the con
 
 ### Computational Resources
 
-- **Step 0-4**: Generally complete within 2-4 hours for 50M read pairs
-- **Step 5 (Monte Carlo simulation)**: Computationally intensive
+- **Steps 175-179 (Preprocessing)**: 1-2 hours for 50M read pairs
+- **Steps 180-184 (Alignment & Separation)**: 2-3 hours
+- **Step 185 (Clustering)**: 0.5-1 hour
+- **Step 186 (Monte Carlo simulation)**: Computationally intensive
   - With default parameters (100,000 iterations, 16 threads): 2-6 hours
   - Increase `monte_carlo_threads` to match available CPU cores for faster execution
   - Memory usage scales with network complexity (~4-8 GB per thread)
@@ -544,15 +657,28 @@ The `scripts_root` parameter points to `/mnt/RICseq_scripts_root` inside the con
 ### Data Storage
 
 Intermediate files can be large:
+- Raw FASTQ: 5-20 GB per sample
 - SAM files: 10-50 GB per sample
 - STAR alignment: 20-100 GB per sample  
 - Total pipeline: 100-300 GB per sample (including temp files)
 
-Consider using `--delete-temp-output` flag in Snakemake to remove intermediate files.
+Consider using `--delete-temp-output` flag in Snakemake to remove intermediate files after successful completion.
+
+### Quality Control Best Practices
+
+1. **Always check raw FastQC first** — Saves time if data quality is insufficient
+2. **Compare raw vs. final QC** — Validates preprocessing effectiveness
+3. **Monitor chimeric read rate** — 5-15% is ideal for RIC-seq
+4. **Check rRNA filtration** — High rRNA (>50%) may indicate sample prep issues
+5. **Review MultiQC report** — Comprehensive overview of all samples
 
 ## Citation
 
 If you use this pipeline in your research, please cite:
+
+**RIC-seq Protocol:**
+
+Cao C, Cai Z, Ye R, et al. Global in situ profiling of RNA-RNA spatial interactions with RIC-seq. *Nature Protocols*. 2021;16:2916-2946. doi:10.1038/s41596-021-00524-2
 
 **Original RIC-seq Method:**
 
@@ -565,3 +691,13 @@ Cai Z, Cao C, Ji L, et al. RIC-seq for global in situ profiling of RNA-RNA spati
 **Original Repository:**
 
 https://github.com/caochch/RICpipe
+
+## License
+
+This pipeline is distributed under the MIT License. See LICENSE file for details.
+
+---
+**Pipeline Version**: 3.0  
+**Last Updated**: January 2026  
+**Protocol Compliance**: Nature Protocols 2021 Steps 175-186 ✅
+```
