@@ -1,5 +1,7 @@
 # RIC-seq Processing Pipeline
 
+**English** | [中文](README_zh.md)
+
 This pipeline processes raw RIC-seq (RNA In situ Conformation sequencing) FASTQ data through a comprehensive workflow including quality control, adapter trimming, PCR duplicate removal, rRNA filtration, genome alignment, paired-end tag collection, and downstream analysis to identify both intra-molecular and inter-molecular RNA-RNA interactions. The entire workflow is fully containerized using Singularity and orchestrated by Snakemake, ensuring reproducibility and compliance with the **Nature Protocols 2021** RIC-seq standard.
 
 ## Overview
