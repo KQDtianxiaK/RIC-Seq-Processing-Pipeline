@@ -319,6 +319,9 @@ gene_annotation_bed: "/path/to/References/hg38/whole_gene_region.bed"
 # 脚本路径（容器内路径，无需修改）
 scripts_root: "/mnt/RICseq_scripts_root"
 
+# 流程控制
+skip_rrna_filter: false              # 设为 true 可跳过 rRNA 过滤步骤（速度更快，但可能保留 rRNA 读取）
+
 # 分析参数
 # 第 3/4 步：分子内相互作用参数
 fragment_len_cutoff: 1000            # 分类用片段长度阈值（bp）
@@ -509,6 +512,33 @@ output/
 
 ## 版本更新记录
 
+### 版本 3.1 — 可选 rRNA 过滤
+
+**新增功能：可配置 rRNA 过滤**
+
+1. **✅ 可选 rRNA 过滤** — 添加 `skip_rrna_filter` 参数，可选择性地跳过耗时的 rRNA 过滤步骤
+2. **✅ 灵活的流程控制** — 用户现可在以下模式中选择：
+   - **标准模式**（`skip_rrna_filter: false`）：完整 rRNA 过滤，获得最佳结果
+   - **快速模式**（`skip_rrna_filter: true`）：已知 rRNA 污染较低时可跳过过滤
+3. **✅ 向后兼容** — 默认行为不变（默认启用 rRNA 过滤）
+
+**何时跳过 rRNA 过滤：**
+
+| 场景 | 建议 |
+|------|------|
+| 首次分析 | 保持过滤启用（默认） |
+| 已知低 rRNA（<10%） | 可跳过以加快处理速度 |
+| 快速测试 | 跳过以减少运行时间 |
+| 高质量文库 | 若前次结果显示低 rRNA 则可跳过 |
+
+**性能影响：**
+
+- 启用 rRNA 过滤：根据数据量额外增加 2–10 小时
+- 跳过 rRNA 过滤：直接进入基因组比对
+- 典型时间节省：大型数据集可节省 20–40%
+
+---
+
 ### 版本 3.0 — Nature Protocols 合规版
 
 **主要改进：**
@@ -544,6 +574,16 @@ output/
 | rRNA 过滤 | ❌ 无 | STAR | STAR（第 180 步） |
 | Monte Carlo | 1,000 次迭代 | 100,000 次 | 100,000 次（第 186 步） |
 | 协议符合性 | 部分 | 部分 | ✅ **100%（第 175-186 步）** |
+
+### 历史更新
+
+1. **Trim Galore 集成** — 替换 Trimmomatic，简化接头修剪流程
+2. **Poly-N 末端去除** — 添加 cutadapt 同聚物过滤
+3. **rRNA 预过滤** — 专用 STAR rRNA 过滤步骤
+4. **多样品支持** — 原生 YAML 配置，支持批量处理
+5. **改进错误处理** — 第 3 步和第 5 步文件处理更加健壮
+6. **更新参数** — Nature 2020 比对（100,000 次 Monte Carlo 迭代）
+7. **完整容器化** — 所有依赖均在 Singularity 容器中
 
 ---
 
@@ -625,6 +665,23 @@ singularity exec RIC-seq.sif perl -MMath::CDF -e 'print "Math::CDF: OK\n"'
 - 路径必须在宿主机上存在
 - 配置文件中使用绝对路径
 
+**问题：rRNA 过滤步骤非常慢**
+
+解决方案：
+- rRNA 过滤步骤使用 STAR 将所有读取比对到 rRNA 参考序列，大型数据集耗时较长
+- 若您的样品 rRNA 污染较低（根据前次结果 <10%），可在 `config.yaml` 中设置 `skip_rrna_filter: true` 跳过此步骤
+- **注意**：跳过 rRNA 过滤将保留 rRNA 读取，可能影响下游分析。仅在已验证 rRNA 污染较低时跳过。
+
+**问题：工作流顺序混乱**
+
+解决方案：当前流程严格遵循 Nature Protocols 2021 第 175-186 步：
+1. 第 175-176 步：首先对**原始读取**进行 FastQC
+2. 第 177 步：接头修剪
+3. 第 178 步：PCR 去重
+4. 第 179 步：低复杂度过滤
+5. 对**处理后读取**进行 FastQC（可选验证）
+6. 第 180-186 步：核心分析流程
+
 ---
 
 ## 重要注意事项
@@ -676,6 +733,7 @@ singularity exec RIC-seq.sif perl -MMath::CDF -e 'print "Math::CDF: OK\n"'
 2. **比对原始与最终 QC** — 验证预处理效果
 3. **监控嵌合读取率** — 5–15% 是 RIC-seq 的理想范围
 4. **检查 rRNA 过滤效果** — rRNA 过高（>50%）可能表明样品制备存在问题
+   - 若 rRNA 污染持续偏低（<10%），可考虑设置 `skip_rrna_filter: true` 以加快处理速度
 5. **查看 MultiQC 报告** — 所有样品的综合质量概览
 
 ---
@@ -708,6 +766,7 @@ https://github.com/caochch/RICpipe
 
 ---
 
-**流程版本**：3.0  
-**最后更新**：2026 年 1 月  
-**协议符合性**：Nature Protocols 2021 第 175-186 步 ✅
+**流程版本**：3.1  
+**最后更新**：2026 年 3 月  
+**协议符合性**：Nature Protocols 2021 第 175-186 步 ✅  
+**新增功能**：可选 rRNA 过滤、双质控检查点
