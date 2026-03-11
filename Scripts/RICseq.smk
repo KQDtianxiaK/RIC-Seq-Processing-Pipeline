@@ -26,11 +26,29 @@ SAMPLES = list(config["samples"].keys())
 # Step5 parameters
 THREADS = list(range(1, config["monte_carlo_threads"] + 1))
 
+# Pipeline control - Skip rRNA filter option
+SKIP_RRNA = config.get("skip_rrna_filter", False)
+
+# Helper function to get alignment input based on skip_rRNA setting
+def get_align_input_r1(wildcards):
+    if SKIP_RRNA:
+        return TRIM_DIR / f"{wildcards.sample}_read1.clean.rmDup.rmPoly.fq"
+    else:
+        return RRNA_DIR / f"{wildcards.sample}.no_rRNA.1.fq"
+
+def get_align_input_r2(wildcards):
+    if SKIP_RRNA:
+        return TRIM_DIR / f"{wildcards.sample}_read2.clean.rmDup.rmPoly.fq"
+    else:
+        return RRNA_DIR / f"{wildcards.sample}.no_rRNA.2.fq"
+
 rule all:
     input:
         expand(str(MULTIQC_DIR / "multiqc_report.html")),
         expand(str(STEP5_DIR / "{sample}.significant.interMolecular.interaction.list"), sample=SAMPLES),
-        expand(str(STEP4_DIR / "{sample}.cluster.withScore.highQuality.list"), sample=SAMPLES)
+        expand(str(STEP4_DIR / "{sample}.cluster.withScore.highQuality.list"), sample=SAMPLES),
+        # Conditional rRNA filter output
+        [] if SKIP_RRNA else expand(str(RRNA_DIR / "{sample}.Log.final.out"), sample=SAMPLES)
 
 # ==========================================
 # Step 175-176: FastQC on Raw Reads
@@ -234,12 +252,13 @@ rule fastqc_final:
         """
 
 # ==========================================
-# Step 180: rRNA Filtration
+# Step 180: rRNA Filtration (Optional)
 # ==========================================
 
 rule rrna_filter:
     """
     Step 180: Map reads to rRNA index and keep unmapped reads.
+    Skipped if skip_rrna_filter is set to true in config.
     """
     input:
         r1 = TRIM_DIR / "{sample}_read1.clean.rmDup.rmPoly.fq",
@@ -252,21 +271,32 @@ rule rrna_filter:
     threads: config["threads"]
     params:
         index = config["rRNA_index"],
-        prefix = str(RRNA_DIR / "{sample}.")
+        prefix = str(RRNA_DIR / "{sample}."),
+        skip = SKIP_RRNA
     log: LOG_DIR / "{sample}_rrna.log"
     shell:
         """
         mkdir -p {RRNA_DIR}
-        STAR --runThreadN {threads} \
-             --genomeDir {params.index} \
-             --readFilesIn {input.r1} {input.r2} \
-             --outFileNamePrefix {params.prefix} \
-             --outReadsUnmapped Fastx \
-             --outSAMmode None \
-             > {log} 2>&1
         
-        mv {params.prefix}Unmapped.out.mate1 {output.r1_clean}
-        mv {params.prefix}Unmapped.out.mate2 {output.r2_clean}
+        if [ "{params.skip}" = "True" ]; then
+            echo "Skipping rRNA filter (skip_rrna_filter=true)" > {log}
+            # Create symlinks to skip the filtering step
+            ln -sf {input.r1} {output.r1_clean}
+            ln -sf {input.r2} {output.r2_clean}
+            # Create a dummy Log.final.out
+            echo "Skipped rRNA filtering" > {output.log_final}
+        else
+            STAR --runThreadN {threads} \
+                 --genomeDir {params.index} \
+                 --readFilesIn {input.r1} {input.r2} \
+                 --outFileNamePrefix {params.prefix} \
+                 --outReadsUnmapped Fastx \
+                 --outSAMmode None \
+                 > {log} 2>&1
+            
+            mv {params.prefix}Unmapped.out.mate1 {output.r1_clean}
+            mv {params.prefix}Unmapped.out.mate2 {output.r2_clean}
+        fi
         """
 
 # ==========================================
@@ -275,7 +305,7 @@ rule rrna_filter:
 
 rule star_align_r1:
     """Step 181: Align read1 to reference genome"""
-    input: RRNA_DIR / "{sample}.no_rRNA.1.fq"
+    input: get_align_input_r1
     output:
         sam = ALIGN_DIR / "{sample}.read1.Aligned.out.sam",
         chim = ALIGN_DIR / "{sample}.read1.Chimeric.out.sam",
@@ -307,7 +337,7 @@ rule star_align_r1:
 
 rule star_align_r2:
     """Step 181: Align read2 to reference genome"""
-    input: RRNA_DIR / "{sample}.no_rRNA.2.fq"
+    input: get_align_input_r2
     output:
         sam = ALIGN_DIR / "{sample}.read2.Aligned.out.sam",
         chim = ALIGN_DIR / "{sample}.read2.Chimeric.out.sam",
@@ -760,8 +790,8 @@ rule multiqc:
         expand(str(TRIM_DIR / "{sample}_R1_trimming_report.txt"), sample=SAMPLES),
         # Dedup stats
         expand(str(DEDUP_DIR / "{sample}_dedup_stats.txt"), sample=SAMPLES),
-        # rRNA filter logs
-        expand(str(RRNA_DIR / "{sample}.Log.final.out"), sample=SAMPLES),
+        # rRNA filter logs (conditional)
+        [] if SKIP_RRNA else expand(str(RRNA_DIR / "{sample}.Log.final.out"), sample=SAMPLES),
         # STAR alignment logs
         expand(str(ALIGN_DIR / "{sample}.read1.Log.final.out"), sample=SAMPLES),
         expand(str(ALIGN_DIR / "{sample}.read2.Log.final.out"), sample=SAMPLES),
