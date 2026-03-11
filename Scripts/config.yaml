@@ -27,13 +27,18 @@ gene_annotation_bed: "/path/to/References/hg38/whole_gene_region.bed"
 # Script paths (container internal path)
 scripts_root: "/mnt/RICseq_scripts_root"
 
-# Analysis parameters
-# Step 3/4: Intramolecular interaction parameters
-fragment_len_cutoff: 1000              # Fragment length cutoff for categorization
-step4_fragment_cutoff: 2                # Minimum unique fragment number for clustering
-step4_connection_score_cutoff: 0.01    # Connection score cutoff (Nature 2020 default)
+# Pipeline control
+skip_rrna_filter: false  # Set to true to skip rRNA filtering step (faster but may retain rRNA reads)
 
-# Step 5: Intermolecular interaction parameters
-pvalue_cutoff: 0.05                    # P-value threshold for significant interactions
-monte_carlo_iters: 100000              # Monte Carlo iterations (Nature 2020 used 100,000)
-monte_carlo_threads: 16                # Parallel threads for Monte Carlo simulation
+# Analysis parameters
+# Step 3/4 intramolecular interaction parameters
+fragment_len_cutoff: 1000  # Fragment length cutoff for Step 3 categorization
+
+# Step 4 clustering parameters (from Nature 2020 paper)
+step4_fragment_cutoff: 2         # Minimum unique fragment number for clustering
+step4_connection_score_cutoff: 0.01  # Connection score cutoff (paper default)
+
+# Step 5 intermolecular interaction parameters
+pvalue_cutoff: 0.05           # P-value cutoff for significant interactions
+monte_carlo_iters: 100000     # Monte Carlo iterations (Nature 2020 used 100,000)
+monte_carlo_threads: 16       # Parallel threads for Monte Carlo simulation
